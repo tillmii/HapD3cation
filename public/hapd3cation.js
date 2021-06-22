@@ -47,8 +47,14 @@ const COVID_DATA_2 = [
     }
 ];
 
+const colors = [
+    '0.54, 0.17, 0.89',
+    '0.31, 0.78, 0.78',
+    '0.96, 0.21, 0.67',
+]
+
 const xScale = d3.scaleBand()
-    .domain(COVID_DATA.map((dataPoint) => dataPoint.country))
+    .domain(COVID_DATA_2.map(dataPoint => dataPoint.key))
     .rangeRound([0, 500])
     .padding(0.1);
 
@@ -56,30 +62,43 @@ const yScale = d3.scaleLinear()
     .domain([0, 21000000])
     .range([500, 0]);
 
+const zScale = d3.scaleBand()
+    .domain(COVID_DATA_2.map(dataPoint => dataPoint.values))
+    .rangeRound([0, 500])
+    .padding(0.1);
+
 const scene = d3.select('scene');
 
-const group = scene
-    .append('group');
+for (let i = 0; i < 3; i++) {
+    console.log("Iteration: " + i);
 
-const transform = group
-    .selectAll('transform')
-    .data(COVID_DATA)
-    .enter()
-    .append('transform')
-    .attr('scale', (data => "100, " + (500 - yScale(data.fullyVaccinated)) + ", 100"))
-    .attr('translation', data => xScale(data.country) + ", " + ((500 - yScale(data.fullyVaccinated)) / 2) + ", 0");
+    const group = scene
+        .append('transform')
+        .attr('translation', "0, 0, " + 200 * i)
+        .append('group');
 
-const shape = transform
-    .append('shape');
+    const transform = group
+        .selectAll('transform')
+        .data(COVID_DATA_2)
+        .enter()
+        .append('transform')
+        .attr('scale', (dataPoint =>
+            "100, " + (500 - yScale(dataPoint.values[i].value)) + ", 100"))
+        .attr('translation', dataPoint =>
+            xScale(dataPoint.key) + ", " + ((500 - yScale(dataPoint.values[i].value)) / 2) + ", 0");
 
-const appearance = shape
-    .append('appearance')
-    .append('material')
-    .attr('diffuseColor', '0.54, 0.17, 0.89');
+    const shape = transform
+        .append('shape');
 
-const box = shape
-    .append('box')
-    .attr('size', '1, 1, 1');
+    const appearance = shape
+        .append('appearance')
+        .append('material')
+        .attr('diffuseColor', colors[i]);
+
+    const box = shape
+        .append('box')
+        .attr('size', '1, 1, 1');
+}
 
 const viewpoint = scene
     .append('viewpoint')
