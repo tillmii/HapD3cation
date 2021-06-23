@@ -10,6 +10,12 @@ app.use('/static', express.static(__dirname + '/public'));
 app.get('/', function(req, res) {
     res.sendFile(path.join(__dirname, '/index.html'));
 });
+app.get('/d3_example', function(req, res) {
+    res.sendFile(path.join(__dirname, '/d3_example.html'));
+});
+app.get('/vega_example', function(req, res) {
+    res.sendFile(path.join(__dirname, '/vega_example.html'));
+});
 app.get('/x3dom', function(req, res) {
     res.sendFile(path.join(__dirname, '/HelloX3DOM.html'));
 });
