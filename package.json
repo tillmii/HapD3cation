@@ -1,14 +1,14 @@
 {
   "name": "hapd3cation",
   "version": "1.0.0",
-  "description": "",
+  "description": "This application is a prototype for automated generation of 3D haptification of information visualization. It is part of my bachelor thesis.",
   "main": "server.js",
   "scripts": {
     "start": "nodemon server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
+  "author": "Till Simon Michels",
   "license": "ISC",
   "dependencies": {
     "express": "^4.17.1"
