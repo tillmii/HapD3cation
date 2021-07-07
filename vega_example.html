@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Vega-Lite Bar Chart</title>
+    <title>Vega-Lite</title>
     <meta charset="utf-8" />
 
     <script src="https://cdn.jsdelivr.net/npm/vega@5.20.2"></script>
@@ -15,35 +15,22 @@
         }
     </style>
 </head>
+
 <body>
-<h1>Template for Embedding Vega-Lite Visualization</h1>
-<!-- Container for the visualization -->
-<div id="vis"></div>
+<h1>Vega-Lite Visualization</h1>
+<!-- Container for the visualizations -->
+<div id="vis_1"></div>
+<div id="vis_2"></div>
+<div id="vis_3"></div>
 
 <script>
-    // Assign the specification to a local variable vlSpec.
-    // var vlSpec = {
-    //     $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-    //     data: {
-    //         url: "/static/vaccination_data.csv"
-    //     },
-    //     mark: 'line',
-    //     encoding: {
-    //         x: {
-    //             field: 'date',
-    //             type: 'temporal'},
-    //         y: {
-    //             field: 'people_vaccinated',
-    //             type: 'quantitative'
-    //         }
-    //     }
-    // };
-
-    var vlSpec = {
+    // Assign the specification to a local variable
+    var vlSpecLineChart = {
         $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
         data: {
             url: "/static/vaccination_data.json"
         },
+        title: "Vaccinated people over time",
         mark: 'line',
         encoding: {
             x: {
@@ -57,8 +44,60 @@
         }
     };
 
-    // Embed the visualization in the container with id `vis`
-    vegaEmbed('#vis', vlSpec);
+    // Embed the visualization in the container with id `vis_1`
+    vegaEmbed('#vis_1', vlSpecLineChart);
+
+    // Assign the specification to a local variable
+    var vlSpecBarChart = {
+        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+        data: {"url": "/static/vaccination_data_bar_chart.json"},
+        title: "Vaccinated and fully vaccinated people 17.06.2021",
+        mark: "bar",
+        encoding: {
+            x: {
+                field: 'country',
+                type: 'nominal'
+            },
+            y: {
+                field: "count",
+                type: "quantitative",
+                stack: 'false'
+            },
+            color: {
+                field: 'status',
+                type: "nominal"
+            }
+        }
+    };
+
+    // Embed the visualization in the container with id `vis_1`
+    vegaEmbed('#vis_2', vlSpecBarChart);
+
+    // Assign the specification to a local variable
+    var vlSpecBarChartPerHundred = {
+        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+        data: {"url": "/static/vaccination_data_per_hundred_bar_chart.json"},
+        title: "Vaccinated and fully vaccinated people per hundred 17.06.2021",
+        mark: "bar",
+        encoding: {
+            x: {
+                field: 'country',
+                type: 'nominal'
+            },
+            y: {
+                field: "count",
+                type: "quantitative",
+                stack: 'false'
+            },
+            color: {
+                field: 'status',
+                type: "nominal"
+            }
+        }
+    };
+
+    // Embed the visualization in the container with id `vis_1`
+    vegaEmbed('#vis_3', vlSpecBarChartPerHundred);
 </script>
 </body>
 </html>
