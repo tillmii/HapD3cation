@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HapD3cation</title>
+
+    <link rel="stylesheet" type="text/css" href="./OpenJSCAD.org/packages/web/css/demo.css">
+    <link rel="stylesheet" type="text/css" href="./OpenJSCAD.org/packages/web/css/editor.css">
+    <link rel="shortcut icon" href="/OpenJSCAD.org/packages/web/imgs/favicon.png" type="image/x-png">
+
+    <script type="text/javascript" src="OpenJSCAD.org/packages/web/dist/jscad-web.min.js"></script>
+    <script type="text/javascript" src="OpenJSCAD.org/packages/web/dist/jscad-web.min.js"></script>
+    <style>
+        body {
+            height: 100%;
+            min-height: 100%;
+            min-width: 100%;
+            margin: 0px;
+            font-family: 'Open Sans', sans-serif;
+        }
+
+        noscript {
+            text-align: center;
+        }
+
+        #jscad {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+
+<noscript>
+    <h1>Please enable JavaScript to use this website</h1>
+</noscript>
+
+<div id='jscad'></div>
+
+<script language="javascript" src="/node_modules/OpenJSCAD.org/packages/web/dist/jscad-web.min.js"></script>
+<script language="javascript">
+    const el1 = document.getElementById('jscad')
+    const jscadInst1 = jscadWeb(el1, {name: 'jscad1'})
+</script>
+<script language="javascript">
+    window.addEventListener('beforeunload', (event) => {
+        event.preventDefault()
+        event.returnValue = ''
+    })
+</script>
+
+
+<script>
+    const el1 = document.getElementById('jscad')
+    const jscadInst1 = jscadWeb(el1, {name: 'jscad1'})
+
+    jscadInst1.jscad(cube());
+
+</script>
+
+
+</body>
+</html>
