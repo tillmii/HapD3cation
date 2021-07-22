@@ -28,7 +28,7 @@
     var vlSpecLineChart = {
         $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
         data: {
-            url: "/static/vaccination_data.json"
+            url: "/public/data/vaccination_data.json"
         },
         title: "Vaccinated people over time",
         mark: 'line',
@@ -50,7 +50,7 @@
     // Assign the specification to a local variable
     var vlSpecBarChart = {
         $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        data: {"url": "/static/vaccination_data_bar_chart.json"},
+        data: {"url": "/public/data/vaccination_data_bar_chart.json"},
         title: "Vaccinated and fully vaccinated people 17.06.2021",
         mark: "bar",
         encoding: {
@@ -76,7 +76,7 @@
     // Assign the specification to a local variable
     var vlSpecBarChartPerHundred = {
         $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        data: {"url": "/static/vaccination_data_per_hundred_bar_chart.json"},
+        data: {"url": "/public/data/vaccination_data_per_hundred_bar_chart.json"},
         title: "Vaccinated and fully vaccinated people per hundred 17.06.2021",
         mark: "bar",
         encoding: {

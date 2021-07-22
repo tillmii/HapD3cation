@@ -11,6 +11,8 @@
   "author": "Till Simon Michels",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.17.1"
+    "express": "^4.17.1",
+    "jscad": "^1.1.0",
+    "require": "^2.4.20"
   }
 }
