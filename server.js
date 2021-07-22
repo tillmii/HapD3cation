@@ -1,3 +1,5 @@
+const diagram = require("./diagram.js")
+
 const express = require('express');
 const path = require('path');
 
@@ -40,6 +42,9 @@ app.get('/beschreibung', function(req, res) {
 });
 app.get('/jscad', function(req, res) {
     res.sendFile(path.join(__dirname, '/lib/html/jscad_hapd3cation.html'));
+});
+app.get('/jscad_diagram', function(req, res) {
+    res.json(diagram.main());
 });
 
 app.listen(port);
