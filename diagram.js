@@ -615,8 +615,8 @@ function assembly (data) {
 }
 
 const main = () => {
-    //return legend()
-    return assembly(diagram_data)
+    return legend()
+    //return assembly(diagram_data)
 
     //return braille_text('till');
     //return legend(4,false,["Till","Test","Hallo","bla"])
