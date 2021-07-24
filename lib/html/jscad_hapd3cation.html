@@ -1,320 +1,37 @@
-<!--<!DOCTYPE html>-->
-<!--<html lang="en">-->
-<!--<head>-->
-<!--    <meta charset="UTF-8">-->
-<!--    <title>HapD3cation</title>-->
-
-<!--    <link rel="stylesheet" type="text/css" href="./OpenJSCAD.org/packages/web/css/demo.css">-->
-<!--    <link rel="stylesheet" type="text/css" href="./OpenJSCAD.org/packages/web/css/editor.css">-->
-<!--    <link rel="shortcut icon" href="/OpenJSCAD.org/packages/web/imgs/favicon.png" type="image/x-png">-->
-
-<!--    <script type="text/javascript" src="OpenJSCAD.org/packages/web/dist/jscad-web.min.js"></script>-->
-<!--    <script type="text/javascript" src="OpenJSCAD.org/packages/web/dist/jscad-web.min.js"></script>-->
-<!--    <style>-->
-<!--        body {-->
-<!--            height: 100%;-->
-<!--            min-height: 100%;-->
-<!--            min-width: 100%;-->
-<!--            margin: 0px;-->
-<!--            font-family: 'Open Sans', sans-serif;-->
-<!--        }-->
-
-<!--        noscript {-->
-<!--            text-align: center;-->
-<!--        }-->
-
-<!--        #jscad {-->
-<!--            width: 100%;-->
-<!--            height: 100%;-->
-<!--        }-->
-<!--    </style>-->
-<!--</head>-->
-<!--<body>-->
-
-<!--<noscript>-->
-<!--    <h1>Please enable JavaScript to use this website</h1>-->
-<!--</noscript>-->
-
-<!--<div id='jscad'></div>-->
-
-<!--<script language="javascript" src="/node_modules/OpenJSCAD.org/packages/web/dist/jscad-web.min.js"></script>-->
-<!--<script language="javascript">-->
-<!--    const el1 = document.getElementById('jscad')-->
-<!--    const jscadInst1 = jscadWeb(el1, {name: 'jscad1'})-->
-<!--</script>-->
-<!--<script language="javascript">-->
-<!--    window.addEventListener('beforeunload', (event) => {-->
-<!--        event.preventDefault()-->
-<!--        event.returnValue = ''-->
-<!--    })-->
-<!--</script>-->
-
-
-<!--<script>-->
-<!--    const el1 = document.getElementById('jscad')-->
-<!--    const jscadInst1 = jscadWeb(el1, {name: 'jscad1'})-->
-
-<!--    jscadInst1.jscad(cube());-->
-
-<!--</script>-->
-
-
-<!--</body>-->
-<!--</html>-->
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>HapD3cation</title>
 
+    <link rel="stylesheet" type="text/css" href="/public/css/demo.css">
+    <link rel="stylesheet" type="text/css" href="/public/css/editor.css">
 
     <style>
-        html{
+        body{
             height: 100%;
-        }
-        body {
             min-height: 100%;
             min-width: 100%;
+            margin: 0px;
+            font-family: 'Open Sans', sans-serif;
         }
-
-        document.body {
-            top: 0px;
-            bottom: 0px;
-            left: 0px;
-            right: 0px;
-            position: absolute;
+        noscript{
+            text-align: center;
         }
-
-    </style>
-    <style>
-        .vfinder-info a,
-        .vfinder-info div {
-            color: #dedede;
-        }
-
-        .vfinder-info *,
-        .vfinder-code * {
-            margin: 0;
-            padding: 0;
-            border-width: 0;
-            background: transparent;
-        }
-
-        .vfinder-info>div {
-            padding: 4px 12px;
-        }
-
-        .vfinder-info>div:hover {
-            background: rgba(140, 140, 140, 0.36);
-        }
-
-        .vfinder-info {
-            position: fixed;
-            border-radius: 4px;
-            padding: 5px 0;
-            background: rgba(64, 64, 64, 0.9);
-
-            /*    padding: 10px 18px;*/
-            z-index: 9999999;
-            border: 1px solid rgb(143, 143, 143);
-            font-size: 13px;
-        }
-
-        .vfinder-info:after {
-            position: absolute;
-            content: " ";
-            width: 10px;
-            height: 10px;
-            -webkit-transform: rotate(45deg);
-            background: rgba(64, 64, 64, 0.9);
-            left: -5px;
-            top: 50%;
-            margin-top: -5px;
-        }
-
-        .vfinder-info-name-template {
-            color: #ff7474;
-        }
-
-        .vfinder-info-name-style {
-            color: #17ceff;
-        }
-
-        .vfinder-info-name-script {
-            color: #f281ff;
-        }
-
-        .vfinder-info-name-created {
-            color: #40c22a;
-        }
-
-        .vfinder-info-name-template,
-        .vfinder-info-name-style,
-        .vfinder-info-name-script,
-        .vfinder-info-name-created {
-            display: inline-block;
-            width: 75px;
-        }
-
-        .vfinder-mask {
-            position: fixed;
-            z-index: 9999998;
-            background-color: rgba(1, 165, 255, 0.2);
-            pointer-events: none;
-        }
-
-        .vfinder-code {
-            position: fixed;
-            /*    padding: 10px;*/
-            /*    background: rgba(254, 255, 221, 0.9);*/
-            background: rgba(64, 64, 64, 0.9);
-            max-width: 400px;
-            font-size: 10px;
-            z-index: 10000000;
-            word-wrap: break-word;
-            border-radius: 4px;
-            /*    color: #747474;*/
-            color: #dedede;
-            border: 1px solid rgba(222, 222, 222, 0.34);
-        }
-
-        .vfinder-path::-webkit-scrollbar,
-        .vfinder-code-content::-webkit-scrollbar {
-            height: 8px;
-            width: 8px;
-        }
-
-        .vfinder-path::-webkit-scrollbar-thumb,
-        .vfinder-code-content::-webkit-scrollbar-thumb {
-            background: rgba(103, 103, 103, 0.9);
-            border-radius: 4px;
-        }
-
-        .vfinder-path::-webkit-scrollbar-track,
-        .vfinder-code-content::-webkit-scrollbar-track {
-            background: #ddd;
-            border-radius: 4px;
-        }
-
-
-        .vfinder-code-content {
-            padding: 0 10px;
-            overflow: auto;
-            max-height: 260px;
-        }
-
-        .vfinder-code-content p {
-            padding: 2px 6px 2px 0;
-        }
-
-        .vfinder-code-content>pre {
-            float: left;
-            clear: left;
-            white-space: nowrap;
-        }
-
-        .vfinder-current-code-line {
-            background: rgba(234, 102, 223, 0.25);
-            border-radius: 2px;
-        }
-
-        .vfinder-path {
-            padding: 10px;
-            border-bottom: 1px solid rgba(222, 222, 222, 0.34);
-            background: rgba(140, 140, 140, 0.36);
-            white-space: nowrap;
-            overflow-x: auto;
-        }
-
-        .vfinder-line-count {
-            color: #dedede;
-            min-width: 25px;
-            display: inline-block;
+        #jscad{
+            width: 100%;
+            height: 100%;
         }
     </style>
-    <style>
-        /*
-  IR_Black style (c) Vasily Mikhailitchenko <vaskas@programica.ru>
-*/
-
-        .hljs {
-            display: block;
-            overflow-x: auto;
-            padding: 0.5em;
-            background: #000;
-            color: #f8f8f8;
-        }
-
-        .hljs-comment,
-        .hljs-quote,
-        .hljs-meta {
-            color: #7c7c7c;
-        }
-
-        .hljs-keyword,
-        .hljs-selector-tag,
-        .hljs-tag,
-        .hljs-name {
-            color: #96cbfe;
-        }
-
-        .hljs-attribute,
-        .hljs-selector-id {
-            color: #ffffb6;
-        }
-
-        .hljs-string,
-        .hljs-selector-attr,
-        .hljs-selector-pseudo,
-        .hljs-addition {
-            color: #a8ff60;
-        }
-
-        .hljs-subst {
-            color: #daefa3;
-        }
-
-        .hljs-regexp,
-        .hljs-link {
-            color: #e9c062;
-        }
-
-        .hljs-title,
-        .hljs-section,
-        .hljs-type,
-        .hljs-doctag {
-            color: #ffffb6;
-        }
-
-        .hljs-symbol,
-        .hljs-bullet,
-        .hljs-variable,
-        .hljs-template-variable,
-        .hljs-literal {
-            color: #c6c5fe;
-        }
-
-        .hljs-number,
-        .hljs-deletion {
-            color: #ff73fd;
-        }
-
-        .hljs-emphasis {
-            font-style: italic;
-        }
-
-        .hljs-strong {
-            font-weight: bold;
-        }
-    </style>
-
 </head>
 <body>
 
+<div id="jscad"></div>
+
 <script src="/public/js/bundle.js"></script>
 
-<canvas width="100%" height="100%" style="border: 0px; margin: 0px; padding: 0px; top: 0px; left: 0px; position: absolute; width: 1280px; height: 1002px;"></canvas></body>
+
+<!--<canvas width="100%" height="100%" style="border: 0px; margin: 0px; padding: 0px; top: 0px; left: 0px; position: absolute; width: 1280px; height: 1002px;"></canvas></body>-->
 
 
 </body>
