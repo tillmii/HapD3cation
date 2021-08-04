@@ -87,13 +87,13 @@ let prevSolids
 let prevColor = []
 
 
-const viewer = (solids, showAxes, showGrid) => {
+const viewer = (htmlElement, solids, showAxes, showGrid) => {
 
     if (!Array.isArray(solids)) {
         solids = [solids];
     }
 
-    const element = document.body;
+    const element = htmlElement;
 
     if (!render) {
         console.log("Initialize")

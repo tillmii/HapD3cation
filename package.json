@@ -23,8 +23,10 @@
     "express": "^4.17.1",
     "jscad": "^1.1.0",
     "jscad-viewer": "^1.0.0",
+    "monaco-editor": "^0.26.1",
     "nanohtml": "^1.9.1",
     "require": "^2.4.20",
+    "split.js": "^1.6.4",
     "superagent": "^6.1.0"
   }
 }
