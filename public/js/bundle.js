@@ -1,4 +1,347 @@
 (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
+const superagent = require('superagent');
+
+const Split = require('split.js');
+
+const viewer = require('./viewer');
+
+superagent.get('/jscad_diagram').then((res, err) => {
+    if (err) {
+        console.log("Error fetching the diagram");
+        console.log(err);
+    } else {
+        console.log("Received the diagram");
+        viewer(document.getElementById('jscad'), res.body, true, true);
+    }
+})
+
+Split(['#split-0', '#split-1'])
+Split(['#split-2', '#split-3'], {
+    direction: 'vertical',
+})
+},{"./viewer":2,"split.js":590,"superagent":592}],2:[function(require,module,exports){
+const html = require('nanohtml');
+
+// viewer data
+const rendererStuff = require('@jscad/regl-renderer')
+
+const {pointerGestures} = require('@jscad/web/src/most-gestures');
+const {prepareRender, drawCommands, cameras, entitiesFromSolids} = rendererStuff;
+const perspectiveCamera = cameras.perspective
+const orbitControls = rendererStuff.controls.orbit;
+
+// params
+const rotateSpeed = 0.002
+const panSpeed = 1
+const zoomSpeed = 0.08
+
+// internal state
+let render
+let viewerOptions
+let camera = perspectiveCamera.defaults
+let controls = orbitControls.defaults
+let rotateDelta = [0, 0]
+let panDelta = [0, 0]
+let zoomDelta = 0
+let zoomToFit = false
+let updateView = true
+
+// setup demo solids data
+const demoSolids = (parameters) => {
+    const {colorize} = require('@jscad/modeling').colors
+    const {cube, cuboid, line, sphere, star} = require('@jscad/modeling').primitives
+    const {intersect, subtract} = require('@jscad/modeling').booleans
+
+    const logo = [
+        colorize([1.0, 0.4, 1.0], subtract(
+            cube({size: 300}),
+            sphere({radius: 200})
+        )),
+        colorize([1.0, 1.0, 0], intersect(
+            sphere({radius: 130}),
+            cube({size: 210})
+        ))
+    ]
+
+    const transpCube = colorize([1, 0, 0, 0.75], cuboid({size: [100 * parameters.scale, 100, 210 + (200 * parameters.scale)]}))
+    const star2D = star({vertices: 8, innerRadius: 150, outerRadius: 200})
+    const line2D = colorize([1.0, 0, 0], line([[220, 220], [-220, 220], [-220, -220], [220, -220], [220, 220]]))
+
+    return [transpCube, line2D, star2D, ...logo]
+}
+
+const demoCube = (parameters) => {
+    const {cube, cuboid, line, sphere, star} = require('@jscad/modeling').primitives
+
+    return cube({ size: 100 })
+}
+
+
+const grid = {
+    // grid data
+    // the choice of what draw command to use is also data based
+    visuals: {
+        drawCmd: 'drawGrid',
+        show: true,
+        color: [0, 0, 0, 1],
+        subColor: [0, 0, 1, 0.5],
+        fadeOut: false,
+        transparent: true
+    },
+    size: [500, 500],
+    ticks: [25, 5]
+    // old: axis stuff too in here
+}
+
+const axes = {
+    visuals: {
+        drawCmd: 'drawAxis',
+        show: true
+    }
+    // size: 300 // old
+}
+
+
+
+// new
+let prevEntities = []
+let prevSolids
+let prevColor = []
+
+
+const viewer = (htmlElement, solids, showAxes, showGrid) => {
+
+    if (!Array.isArray(solids)) {
+        solids = [solids];
+    }
+
+    const element = htmlElement;
+
+    if (!render) {
+        console.log("Initialize")
+        const options = setup(element, solids, showAxes, showGrid); // Difference: Render solids in setup()
+        viewerOptions = options.viewerOptions;
+        camera = options.camera;
+
+        render = prepareRender(viewerOptions);
+
+        const gestures = pointerGestures(element);
+
+        window.addEventListener('resize', (evt) => { updateView = true })
+
+        // rotate & pan
+        gestures.drags
+            .forEach((data) => {
+                const ev = data.originalEvents[0]
+                const { x, y } = data.delta
+                const shiftKey = (ev.shiftKey === true) || (ev.touches && ev.touches.length > 2)
+                if (shiftKey) {
+                    panDelta[0] += x
+                    panDelta[1] += y
+                } else {
+                    rotateDelta[0] -= x
+                    rotateDelta[1] -= y
+                }
+            })
+
+        // zoom
+        gestures.zooms
+            .forEach((x) => {
+                zoomDelta -= x
+            })
+
+        // auto fit
+        gestures.taps
+            .filter((taps) => taps.nb === 2)
+            .forEach((x) => {
+                zoomToFit = true
+            })
+
+        const doRotatePanZoom = () => {
+            if (rotateDelta[0] || rotateDelta[1]) {
+                const updated = orbitControls.rotate({ controls, camera, speed: rotateSpeed }, rotateDelta)
+                rotateDelta = [0, 0]
+                controls = { ...controls, ...updated.controls }
+                updateView = true
+            }
+
+            if (panDelta[0] || panDelta[1]) {
+                const updated = orbitControls.pan({ controls, camera, speed: panSpeed }, panDelta)
+                panDelta = [0, 0]
+                camera.position = updated.camera.position
+                camera.target = updated.camera.target
+                updateView = true
+            }
+
+            if (zoomDelta) {
+                const updated = orbitControls.zoom({ controls, camera, speed: zoomSpeed }, zoomDelta)
+                controls = { ...controls, ...updated.controls }
+                zoomDelta = 0
+                updateView = true
+            }
+
+            if (zoomToFit) {
+                controls.zoomToFit.tightness = 1.5
+                const updated = orbitControls.zoomToFit({ controls, camera, entities: prevEntities })
+                controls = { ...controls, ...updated.controls }
+                zoomToFit = false
+                updateView = true
+            }
+        }
+
+        // the heart of rendering, as themes, controls, etc change
+        const updateAndRender = (timestamp) => {
+
+            doRotatePanZoom()
+
+            if (updateView) {
+                console.log("Render")
+                const updated = orbitControls.update({ controls, camera })
+                controls = { ...controls, ...updated.controls }
+                updateView = controls.changed // for elasticity in rotate / zoom
+
+                camera.position = updated.camera.position
+                perspectiveCamera.update(camera)
+
+                resize(element)
+                render(viewerOptions)
+                // console.log(viewerOptions) // Debug
+            }
+
+            window.requestAnimationFrame(updateAndRender)
+        }
+        window.requestAnimationFrame(updateAndRender)
+    } else {
+        console.log("Render already exists. Change Solids.")
+        // only generate entities when the solids change
+        // themes, options, etc also change the viewer state
+        if (prevSolids) {
+            //const theme = state.themes.themeSettings.viewer
+            //const color = theme.rendering.meshColor
+            //const sameColor = prevColor === color
+            const sameSolids = compareSolids(solids, prevSolids)
+            // const sameSolids = false;
+            console.log("Same solids: " + sameSolids);
+            if (!sameSolids) {
+                prevSolids = solids; // test
+                prevEntities = entitiesFromSolids({}, solids)
+                //prevColor = color
+
+                //zoomToFit = state.viewer.rendering.autoZoom
+            }
+        }
+        // prevSolids = solids
+
+
+        // if (state.themes && state.themes.themeSettings) {
+        //     const theme = state.themes.themeSettings.viewer
+        //     grid.visuals.color = theme.grid.color
+        //     grid.visuals.subColor = theme.grid.subColor
+        //
+        //     if (viewerOptions.rendering) {
+        //         viewerOptions.rendering.background = theme.rendering.background
+        //         viewerOptions.rendering.meshColor = theme.rendering.meshColor
+        //         updateView = true
+        //     }
+        // }
+
+        viewerOptions.entities = [
+            showGrid ? grid : undefined,
+            showAxes ? axes : undefined,
+            ...prevEntities
+        ].filter((x) => x !== undefined)
+
+        // special camera commands
+        // if (state.viewer.camera.position !== '') {
+        //     const adjustment = cameras.camera.toPresetView(state.viewer.camera.position, { camera })
+        //     camera.position = adjustment.position
+        //     perspectiveCamera.update(camera)
+        //
+        //     state.viewer.camera.position = ''
+        // }
+        // if (state.viewer.rendering) {
+        //     controls.autoRotate.enabled = state.viewer.rendering.autoRotate
+        // }
+    }
+}
+
+const setup = (element, solids, showAxes, showGrid) => {
+    // process entities and inject extras
+    prevSolids = solids;
+    prevEntities = entitiesFromSolids({}, solids) // old
+    compareSolids(prevSolids)
+
+    // prepare the camera
+    const camera = Object.assign({}, perspectiveCamera.defaults)
+    // camera.position = [150, -180, 233] // new
+
+    const viewerOptions = {
+        glOptions: {container: element},
+        camera,
+        drawCommands: {
+            // draw commands bootstrap themselves the first time they are run
+            drawAxis: drawCommands.drawAxis,
+            drawGrid: drawCommands.drawGrid,
+            drawLines: drawCommands.drawLines,
+            drawMesh: drawCommands.drawMesh
+        },
+        // data old
+        entities: [
+            grid,
+            axes,
+            ...prevEntities
+        ]
+        // entities: [] // new
+    }
+
+    viewerOptions.entities = [
+        showGrid ? grid : undefined,
+        showAxes ? axes : undefined,
+        ...prevEntities
+    ].filter((x) => x !== undefined)
+
+    return { viewerOptions, camera }
+}
+
+const resize = (viewerElement) => {
+    const pixelRatio = window.devicePixelRatio || 1
+    const bounds = viewerElement.getBoundingClientRect()
+
+    const width = (bounds.right - bounds.left) * pixelRatio
+    const height = (bounds.bottom - bounds.top) * pixelRatio
+
+    const prevWidth = viewerElement.width
+    const prevHeight = viewerElement.height
+
+    if (prevWidth !== width || prevHeight !== height) {
+        viewerElement.width = width
+        viewerElement.height = height
+
+        perspectiveCamera.setProjection(camera, camera, { width, height })
+        perspectiveCamera.update(camera, camera)
+    }
+}
+
+let idCounter = Date.now()
+const compareSolids = (current, previous) => {
+    // add an id to each solid if not already
+    current = current.map((s) => {
+        if (!s.id) s.id = ++idCounter
+        return s
+    })
+    // check if the solids are the same
+    if (!previous) return false
+    if (current.length !== previous.length) return false
+    return current.reduce((acc, id, i) => acc && current[i].id === previous[i].id, true)
+}
+
+
+// viewer(demoSolids({scale: 1}), true, false);
+// viewer(demoCube({scale: 1}), true, true);
+
+module.exports = viewer;
+
+},{"@jscad/modeling":95,"@jscad/regl-renderer":402,"@jscad/web/src/most-gestures":484,"nanohtml":584}],3:[function(require,module,exports){
 /**
  * Flatten the given array into a single array of elements.
  * The given array can be composed of multiple depths of objects and or arrays.
@@ -12,7 +355,7 @@ const flatten = (arr) => arr.reduce((acc, val) => Array.isArray(val) ? acc.conca
 
 module.exports = flatten
 
-},{}],2:[function(require,module,exports){
+},{}],4:[function(require,module,exports){
 /**
  * Compare function for sorting arrays of numbers.
  * @param {Number} a - first number
@@ -27,7 +370,7 @@ const fnNumberSort = (a, b) => a - b
 
 module.exports = fnNumberSort
 
-},{}],3:[function(require,module,exports){
+},{}],5:[function(require,module,exports){
 /**
  * Return the first element of the given array.
  * @param {*} array - anything
@@ -45,7 +388,7 @@ const head = (array) => {
 
 module.exports = head
 
-},{}],4:[function(require,module,exports){
+},{}],6:[function(require,module,exports){
 /**
  * Utility functions for arrays.
  * @module array-utils
@@ -63,7 +406,7 @@ module.exports = {
   toArray: require('./toArray')
 }
 
-},{"./flatten":1,"./fnNumberSort":2,"./head":3,"./insertSorted":5,"./nth":6,"./padToLength":7,"./toArray":8}],5:[function(require,module,exports){
+},{"./flatten":3,"./fnNumberSort":4,"./head":5,"./insertSorted":7,"./nth":8,"./padToLength":9,"./toArray":10}],7:[function(require,module,exports){
 /**
  * Insert the given element into the give array using the compareFunction.
  * @param {Array} array - array in which to insert
@@ -93,7 +436,7 @@ const insertSorted = (array, element, compareFunction) => {
 
 module.exports = insertSorted
 
-},{}],6:[function(require,module,exports){
+},{}],8:[function(require,module,exports){
 /**
  * Return the Nth element of the given array.
  * @param {*} array - anything
@@ -113,7 +456,7 @@ const nth = (array, index) => {
 
 module.exports = nth
 
-},{}],7:[function(require,module,exports){
+},{}],9:[function(require,module,exports){
 /**
  * Build an array of the given target length from an existing array and a padding value.
  * If the array is already larger than the target length, it will not be shortened.
@@ -136,7 +479,7 @@ const padToLength = (anArray, padding, targetLength) => {
 
 module.exports = padToLength
 
-},{}],8:[function(require,module,exports){
+},{}],10:[function(require,module,exports){
 /**
  * Convert the given array to an array if not already an array.
  * @param {*} array - anything
@@ -153,7 +496,7 @@ const toArray = (array) => {
 
 module.exports = toArray
 
-},{}],9:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 const cssColors = require('./cssColors')
 
 /**
@@ -169,7 +512,7 @@ const colorNameToRgb = (s) => cssColors[s.toLowerCase()]
 
 module.exports = colorNameToRgb
 
-},{"./cssColors":11}],10:[function(require,module,exports){
+},{"./cssColors":13}],12:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 const geom2 = require('../geometries/geom2')
@@ -237,7 +580,7 @@ const colorize = (color, ...objects) => {
 
 module.exports = colorize
 
-},{"../geometries/geom2":30,"../geometries/geom3":44,"../geometries/path2":65,"../geometries/poly3":81,"../utils/flatten":382}],11:[function(require,module,exports){
+},{"../geometries/geom2":32,"../geometries/geom3":46,"../geometries/path2":67,"../geometries/poly3":83,"../utils/flatten":384}],13:[function(require,module,exports){
 /**
  * @alias module:modeling/colors.cssColors
  * @see CSS color table from http://www.w3.org/TR/css3-color/
@@ -415,7 +758,7 @@ const cssColors = {
 
 module.exports = cssColors
 
-},{}],12:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 /**
  * Converts CSS color notations (string of hex values) to RGB values.
  *
@@ -443,7 +786,7 @@ const hexToRgb = (notation) => {
 
 module.exports = hexToRgb
 
-},{}],13:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 const hueToColorComponent = require('./hueToColorComponent')
@@ -489,7 +832,7 @@ const hslToRgb = (...values) => {
 
 module.exports = hslToRgb
 
-},{"../utils/flatten":382,"./hueToColorComponent":15}],14:[function(require,module,exports){
+},{"../utils/flatten":384,"./hueToColorComponent":17}],16:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 /**
@@ -564,7 +907,7 @@ const hsvToRgb = (...values) => {
 
 module.exports = hsvToRgb
 
-},{"../utils/flatten":382}],15:[function(require,module,exports){
+},{"../utils/flatten":384}],17:[function(require,module,exports){
 /**
  * Convert hue values to a color component (ie one of r, g, b)
  * @param  {Number} p
@@ -583,7 +926,7 @@ const hueToColorComponent = (p, q, t) => {
 
 module.exports = hueToColorComponent
 
-},{}],16:[function(require,module,exports){
+},{}],18:[function(require,module,exports){
 /**
  * All shapes (primitives or the results of operations) can be assigned a color (RGBA).
  * In all cases, the function returns the results, and never changes the original shapes.
@@ -604,7 +947,7 @@ module.exports = {
   rgbToHsv: require('./rgbToHsv')
 }
 
-},{"./colorNameToRgb":9,"./colorize":10,"./cssColors":11,"./hexToRgb":12,"./hslToRgb":13,"./hsvToRgb":14,"./hueToColorComponent":15,"./rgbToHex":17,"./rgbToHsl":18,"./rgbToHsv":19}],17:[function(require,module,exports){
+},{"./colorNameToRgb":11,"./colorize":12,"./cssColors":13,"./hexToRgb":14,"./hslToRgb":15,"./hsvToRgb":16,"./hueToColorComponent":17,"./rgbToHex":19,"./rgbToHsl":20,"./rgbToHsv":21}],19:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 /**
@@ -633,7 +976,7 @@ const rgbToHex = (...values) => {
 
 module.exports = rgbToHex
 
-},{"../utils/flatten":382}],18:[function(require,module,exports){
+},{"../utils/flatten":384}],20:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 /**
@@ -688,7 +1031,7 @@ const rgbToHsl = (...values) => {
 
 module.exports = rgbToHsl
 
-},{"../utils/flatten":382}],19:[function(require,module,exports){
+},{"../utils/flatten":384}],21:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 /**
@@ -742,7 +1085,7 @@ const rgbToHsv = (...values) => {
 
 module.exports = rgbToHsv
 
-},{"../utils/flatten":382}],20:[function(require,module,exports){
+},{"../utils/flatten":384}],22:[function(require,module,exports){
 /**
  * Represents a bezier easing function.
  * @typedef {Object} bezier
@@ -829,7 +1172,7 @@ const factorial = function (b) {
 
 module.exports = create
 
-},{}],21:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 /**
  * Represents a bezier easing function.
  * @see {@link bezier} for data structure information.
@@ -841,7 +1184,7 @@ module.exports = {
   tangentAt: require('./tangentAt')
 }
 
-},{"./create":20,"./tangentAt":22,"./valueAt":23}],22:[function(require,module,exports){
+},{"./create":22,"./tangentAt":24,"./valueAt":25}],24:[function(require,module,exports){
 /**
  * Calculates the tangent at a specific point along a bezier easing curve.
  * For multidimensional curves, the tangent is the slope of each dimension at that point.
@@ -888,7 +1231,7 @@ const bezierTangent = function (bezier, p, t) {
 
 module.exports = tangentAt
 
-},{}],23:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
 /**
  * Calculates the position at a specific point along a bezier easing curve.
  * For multidimensional curves, the tangent is the slope of each dimension at that point.
@@ -934,7 +1277,7 @@ const bezierFunction = function (bezier, p, t) {
 
 module.exports = valueAt
 
-},{}],24:[function(require,module,exports){
+},{}],26:[function(require,module,exports){
 /**
  * Curves are n-dimensional mathematical constructs that define a path from point 0 to point 1
  * @module modeling/curves
@@ -946,7 +1289,7 @@ module.exports = {
   bezier: require('./bezier')
 }
 
-},{"./bezier":21}],25:[function(require,module,exports){
+},{"./bezier":23}],27:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec2 = require('../../maths/vec2')
 
@@ -974,7 +1317,7 @@ const applyTransforms = (geometry) => {
 
 module.exports = applyTransforms
 
-},{"../../maths/mat4":145,"../../maths/vec2":191}],26:[function(require,module,exports){
+},{"../../maths/mat4":147,"../../maths/vec2":193}],28:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec2 = require('../../maths/vec2')
 
@@ -995,7 +1338,7 @@ const clone = (geometry) => {
 
 module.exports = clone
 
-},{"../../maths/mat4":145,"../../maths/vec2":191,"./create":27}],27:[function(require,module,exports){
+},{"../../maths/mat4":147,"../../maths/vec2":193,"./create":29}],29:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 /**
@@ -1023,7 +1366,7 @@ const create = (sides) => {
 
 module.exports = create
 
-},{"../../maths/mat4":145}],28:[function(require,module,exports){
+},{"../../maths/mat4":147}],30:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec2 = require('../../maths/vec2')
 
@@ -1057,7 +1400,7 @@ const fromCompactBinary = (data) => {
 
 module.exports = fromCompactBinary
 
-},{"../../maths/mat4":145,"../../maths/vec2":191,"./create":27}],29:[function(require,module,exports){
+},{"../../maths/mat4":147,"../../maths/vec2":193,"./create":29}],31:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 
 const create = require('./create')
@@ -1094,7 +1437,7 @@ const fromPoints = (points) => {
 
 module.exports = fromPoints
 
-},{"../../maths/vec2":191,"./create":27}],30:[function(require,module,exports){
+},{"../../maths/vec2":193,"./create":29}],32:[function(require,module,exports){
 /**
  * Represents a 2D geometry consisting of a list of sides.
  * @see {@link geom2} for data structure information.
@@ -1115,7 +1458,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./clone":26,"./create":27,"./fromCompactBinary":28,"./fromPoints":29,"./isA":31,"./reverse":32,"./toCompactBinary":33,"./toOutlines":34,"./toPoints":35,"./toSides":36,"./toString":37,"./transform":38}],31:[function(require,module,exports){
+},{"./clone":28,"./create":29,"./fromCompactBinary":30,"./fromPoints":31,"./isA":33,"./reverse":34,"./toCompactBinary":35,"./toOutlines":36,"./toPoints":37,"./toSides":38,"./toString":39,"./transform":40}],33:[function(require,module,exports){
 /**
  * Determin if the given object is a 2D geometry.
  * @param {Object} object - the object to interogate
@@ -1135,7 +1478,7 @@ const isA = (object) => {
 
 module.exports = isA
 
-},{}],32:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 const create = require('./create')
 const toSides = require('./toSides')
 
@@ -1159,7 +1502,7 @@ const reverse = (geometry) => {
 
 module.exports = reverse
 
-},{"./create":27,"./toSides":36}],33:[function(require,module,exports){
+},{"./create":29,"./toSides":38}],35:[function(require,module,exports){
 /**
  * Produces a compact binary representation from the given geometry.
  * @param {geom2} geometry - the geometry
@@ -1214,7 +1557,7 @@ const toCompactBinary = (geom) => {
 
 module.exports = toCompactBinary
 
-},{}],34:[function(require,module,exports){
+},{}],36:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 
 const toSides = require('./toSides')
@@ -1326,7 +1669,7 @@ const toOutlines = (geometry) => {
 
 module.exports = toOutlines
 
-},{"../../maths/vec2":191,"./toSides":36}],35:[function(require,module,exports){
+},{"../../maths/vec2":193,"./toSides":38}],37:[function(require,module,exports){
 const toSides = require('./toSides')
 
 /**
@@ -1353,7 +1696,7 @@ const toPoints = (geometry) => {
 
 module.exports = toPoints
 
-},{"./toSides":36}],36:[function(require,module,exports){
+},{"./toSides":38}],38:[function(require,module,exports){
 const applyTransforms = require('./applyTransforms')
 
 /**
@@ -1371,7 +1714,7 @@ const toSides = (geometry) => applyTransforms(geometry).sides
 
 module.exports = toSides
 
-},{"./applyTransforms":25}],37:[function(require,module,exports){
+},{"./applyTransforms":27}],39:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 
 const toSides = require('./toSides')
@@ -1397,7 +1740,7 @@ const toString = (geometry) => {
 
 module.exports = toString
 
-},{"../../maths/vec2":191,"./toSides":36}],38:[function(require,module,exports){
+},{"../../maths/vec2":193,"./toSides":38}],40:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 const create = require('./create')
@@ -1423,7 +1766,7 @@ const transform = (matrix, geometry) => {
 
 module.exports = transform
 
-},{"../../maths/mat4":145,"./create":27}],39:[function(require,module,exports){
+},{"../../maths/mat4":147,"./create":29}],41:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 const poly3 = require('../poly3')
@@ -1449,7 +1792,7 @@ const applyTransforms = (geometry) => {
 
 module.exports = applyTransforms
 
-},{"../../maths/mat4":145,"../poly3":81}],40:[function(require,module,exports){
+},{"../../maths/mat4":147,"../poly3":83}],42:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 const poly3 = require('../poly3')
@@ -1472,7 +1815,7 @@ const clone = (geometry) => {
 
 module.exports = clone
 
-},{"../../maths/mat4":145,"../poly3":81,"./create":41}],41:[function(require,module,exports){
+},{"../../maths/mat4":147,"../poly3":83,"./create":43}],43:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 /**
@@ -1502,7 +1845,7 @@ const create = (polygons) => {
 
 module.exports = create
 
-},{"../../maths/mat4":145}],42:[function(require,module,exports){
+},{"../../maths/mat4":147}],44:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 const mat4 = require('../../maths/mat4')
 
@@ -1550,7 +1893,7 @@ const fromCompactBinary = (data) => {
 
 module.exports = fromCompactBinary
 
-},{"../../maths/mat4":145,"../../maths/vec3":222,"../poly3":81,"./create":41}],43:[function(require,module,exports){
+},{"../../maths/mat4":147,"../../maths/vec3":224,"../poly3":83,"./create":43}],45:[function(require,module,exports){
 const poly3 = require('../poly3')
 
 const create = require('./create')
@@ -1580,7 +1923,7 @@ const fromPoints = (listofpoints) => {
 
 module.exports = fromPoints
 
-},{"../poly3":81,"./create":41}],44:[function(require,module,exports){
+},{"../poly3":83,"./create":43}],46:[function(require,module,exports){
 /**
  * Represents a 3D geometry consisting of a list of polygons.
  * @see {@link geom3} for data structure information.
@@ -1600,7 +1943,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./clone":40,"./create":41,"./fromCompactBinary":42,"./fromPoints":43,"./invert":45,"./isA":46,"./toCompactBinary":47,"./toPoints":48,"./toPolygons":49,"./toString":50,"./transform":51}],45:[function(require,module,exports){
+},{"./clone":42,"./create":43,"./fromCompactBinary":44,"./fromPoints":45,"./invert":47,"./isA":48,"./toCompactBinary":49,"./toPoints":50,"./toPolygons":51,"./toString":52,"./transform":53}],47:[function(require,module,exports){
 const poly3 = require('../poly3')
 
 const create = require('./create')
@@ -1620,7 +1963,7 @@ const invert = (geometry) => {
 
 module.exports = invert
 
-},{"../poly3":81,"./create":41,"./toPolygons":49}],46:[function(require,module,exports){
+},{"../poly3":83,"./create":43,"./toPolygons":51}],48:[function(require,module,exports){
 /**
  * Determin if the given object is a 3D geometry.
  * @param {object} object - the object to interogate
@@ -1640,7 +1983,7 @@ const isA = (object) => {
 
 module.exports = isA
 
-},{}],47:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 const poly3 = require('../poly3')
 
 /**
@@ -1712,7 +2055,7 @@ const toCompactBinary = (geom) => {
 
 module.exports = toCompactBinary
 
-},{"../poly3":81}],48:[function(require,module,exports){
+},{"../poly3":83}],50:[function(require,module,exports){
 const poly3 = require('../poly3')
 
 const toPolygons = require('./toPolygons')
@@ -1731,7 +2074,7 @@ const toPoints = (geometry) => {
 
 module.exports = toPoints
 
-},{"../poly3":81,"./toPolygons":49}],49:[function(require,module,exports){
+},{"../poly3":83,"./toPolygons":51}],51:[function(require,module,exports){
 const applyTransforms = require('./applyTransforms')
 
 /**
@@ -1748,7 +2091,7 @@ const toPolygons = (geometry) => applyTransforms(geometry).polygons
 
 module.exports = toPolygons
 
-},{"./applyTransforms":39}],50:[function(require,module,exports){
+},{"./applyTransforms":41}],52:[function(require,module,exports){
 const poly3 = require('../poly3')
 
 const toPolygons = require('./toPolygons')
@@ -1773,7 +2116,7 @@ const toString = (geometry) => {
 
 module.exports = toString
 
-},{"../poly3":81,"./toPolygons":49}],51:[function(require,module,exports){
+},{"../poly3":83,"./toPolygons":51}],53:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 const create = require('./create')
@@ -1800,7 +2143,7 @@ const transform = (matrix, geometry) => {
 
 module.exports = transform
 
-},{"../../maths/mat4":145,"./create":41}],52:[function(require,module,exports){
+},{"../../maths/mat4":147,"./create":43}],54:[function(require,module,exports){
 /**
  * Geometries are objects that represent the contents of primitives or the results of operations.
  * Note: Geometries are consider immutable, so never change the contents directly.
@@ -1816,7 +2159,7 @@ module.exports = {
   poly3: require('./poly3')
 }
 
-},{"./geom2":30,"./geom3":44,"./path2":65,"./poly2":75,"./poly3":81}],53:[function(require,module,exports){
+},{"./geom2":32,"./geom3":46,"./path2":67,"./poly2":77,"./poly3":83}],55:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 
 const fromPoints = require('./fromPoints')
@@ -1957,7 +2300,7 @@ const appendArc = (options, geometry) => {
 
 module.exports = appendArc
 
-},{"../../maths/vec2":191,"./fromPoints":64,"./toPoints":69}],54:[function(require,module,exports){
+},{"../../maths/vec2":193,"./fromPoints":66,"./toPoints":71}],56:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 const vec3 = require('../../maths/vec2')
 
@@ -2114,7 +2457,7 @@ const appendBezier = (options, geometry) => {
 
 module.exports = appendBezier
 
-},{"../../maths/vec2":191,"./appendPoints":55,"./toPoints":69}],55:[function(require,module,exports){
+},{"../../maths/vec2":193,"./appendPoints":57,"./toPoints":71}],57:[function(require,module,exports){
 const fromPoints = require('./fromPoints')
 const toPoints = require('./toPoints')
 
@@ -2140,7 +2483,7 @@ const appendPoints = (points, geometry) => {
 
 module.exports = appendPoints
 
-},{"./fromPoints":64,"./toPoints":69}],56:[function(require,module,exports){
+},{"./fromPoints":66,"./toPoints":71}],58:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec2 = require('../../maths/vec2')
 
@@ -2162,7 +2505,7 @@ const applyTransforms = (geometry) => {
 
 module.exports = applyTransforms
 
-},{"../../maths/mat4":145,"../../maths/vec2":191}],57:[function(require,module,exports){
+},{"../../maths/mat4":147,"../../maths/vec2":193}],59:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec2 = require('../../maths/vec2')
 
@@ -2184,7 +2527,7 @@ const clone = (geometry) => {
 
 module.exports = clone
 
-},{"../../maths/mat4":145,"../../maths/vec2":191,"./create":60}],58:[function(require,module,exports){
+},{"../../maths/mat4":147,"../../maths/vec2":193,"./create":62}],60:[function(require,module,exports){
 const { EPS } = require('../../maths/constants')
 
 const vec2 = require('../../maths/vec2')
@@ -2219,7 +2562,7 @@ const close = (geometry) => {
 
 module.exports = close
 
-},{"../../maths/constants":95,"../../maths/vec2":191,"./clone":57}],59:[function(require,module,exports){
+},{"../../maths/constants":97,"../../maths/vec2":193,"./clone":59}],61:[function(require,module,exports){
 const fromPoints = require('./fromPoints')
 const toPoints = require('./toPoints')
 
@@ -2253,7 +2596,7 @@ const concat = (...paths) => {
 
 module.exports = concat
 
-},{"./fromPoints":64,"./toPoints":69}],60:[function(require,module,exports){
+},{"./fromPoints":66,"./toPoints":71}],62:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 /**
@@ -2285,7 +2628,7 @@ const create = (points) => {
 
 module.exports = create
 
-},{"../../maths/mat4":145}],61:[function(require,module,exports){
+},{"../../maths/mat4":147}],63:[function(require,module,exports){
 const toPoints = require('./toPoints')
 
 /**
@@ -2304,7 +2647,7 @@ const eachPoint = (options, thunk, path) => {
 
 module.exports = eachPoint
 
-},{"./toPoints":69}],62:[function(require,module,exports){
+},{"./toPoints":71}],64:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 
 const toPoints = require('./toPoints')
@@ -2353,7 +2696,7 @@ const equals = (a, b) => {
 
 module.exports = equals
 
-},{"../../maths/vec2":191,"./toPoints":69}],63:[function(require,module,exports){
+},{"../../maths/vec2":193,"./toPoints":71}],65:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec2 = require('../../maths/vec2')
 
@@ -2388,7 +2731,7 @@ const fromCompactBinary = (data) => {
 
 module.exports = fromCompactBinary
 
-},{"../../maths/mat4":145,"../../maths/vec2":191,"./create":60}],64:[function(require,module,exports){
+},{"../../maths/mat4":147,"../../maths/vec2":193,"./create":62}],66:[function(require,module,exports){
 const { EPS } = require('../../maths/constants')
 
 const vec2 = require('../../maths/vec2')
@@ -2432,7 +2775,7 @@ const fromPoints = (options, points) => {
 
 module.exports = fromPoints
 
-},{"../../maths/constants":95,"../../maths/vec2":191,"./close":58,"./create":60}],65:[function(require,module,exports){
+},{"../../maths/constants":97,"../../maths/vec2":193,"./close":60,"./create":62}],67:[function(require,module,exports){
 /**
  * Represents a 2D geometry consisting of a list of ordered points.
  * @see {@link path2} for data structure information.
@@ -2458,7 +2801,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./appendArc":53,"./appendBezier":54,"./appendPoints":55,"./clone":57,"./close":58,"./concat":59,"./create":60,"./eachPoint":61,"./equals":62,"./fromCompactBinary":63,"./fromPoints":64,"./isA":66,"./reverse":67,"./toCompactBinary":68,"./toPoints":69,"./toString":70,"./transform":71}],66:[function(require,module,exports){
+},{"./appendArc":55,"./appendBezier":56,"./appendPoints":57,"./clone":59,"./close":60,"./concat":61,"./create":62,"./eachPoint":63,"./equals":64,"./fromCompactBinary":65,"./fromPoints":66,"./isA":68,"./reverse":69,"./toCompactBinary":70,"./toPoints":71,"./toString":72,"./transform":73}],68:[function(require,module,exports){
 /**
  * Determin if the given object is a path2 geometry.
  * @param {Object} object - the object to interogate
@@ -2480,7 +2823,7 @@ const isA = (object) => {
 
 module.exports = isA
 
-},{}],67:[function(require,module,exports){
+},{}],69:[function(require,module,exports){
 const clone = require('./clone')
 
 /**
@@ -2502,7 +2845,7 @@ const reverse = (path) => {
 
 module.exports = reverse
 
-},{"./clone":57}],68:[function(require,module,exports){
+},{"./clone":59}],70:[function(require,module,exports){
 /**
  * Produce a compact binary representation from the given path.
  * @param {path2} geometry - the path
@@ -2556,7 +2899,7 @@ const toCompactBinary = (geom) => {
 
 module.exports = toCompactBinary
 
-},{}],69:[function(require,module,exports){
+},{}],71:[function(require,module,exports){
 const applyTransforms = require('./applyTransforms')
 
 /**
@@ -2573,7 +2916,7 @@ const toPoints = (geometry) => applyTransforms(geometry).points
 
 module.exports = toPoints
 
-},{"./applyTransforms":56}],70:[function(require,module,exports){
+},{"./applyTransforms":58}],72:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 
 const toPoints = require('./toPoints')
@@ -2599,7 +2942,7 @@ const toString = (geometry) => {
 
 module.exports = toString
 
-},{"../../maths/vec2":191,"./toPoints":69}],71:[function(require,module,exports){
+},{"../../maths/vec2":193,"./toPoints":71}],73:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 const create = require('./create')
@@ -2626,7 +2969,7 @@ const transform = (matrix, geometry) => {
 
 module.exports = transform
 
-},{"../../maths/mat4":145,"./create":60}],72:[function(require,module,exports){
+},{"../../maths/mat4":147,"./create":62}],74:[function(require,module,exports){
 const measureArea = require('./measureArea')
 const flip = require('./flip')
 
@@ -2753,7 +3096,7 @@ const isLeft = (p0, p1, p2) => (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0
 
 module.exports = arePointsInside
 
-},{"./flip":74,"./measureArea":76}],73:[function(require,module,exports){
+},{"./flip":76,"./measureArea":78}],75:[function(require,module,exports){
 /**
  * Represents a convex 2D polygon consisting of a list of ordered vertices.
  * @typedef {Object} poly2
@@ -2779,7 +3122,7 @@ const create = (vertices) => {
 
 module.exports = create
 
-},{}],74:[function(require,module,exports){
+},{}],76:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -2796,7 +3139,7 @@ const flip = (polygon) => {
 
 module.exports = flip
 
-},{"./create":73}],75:[function(require,module,exports){
+},{"./create":75}],77:[function(require,module,exports){
 /**
  * Represents a 2D polygon consisting of a list of ordered vertices.
  * @see {@link poly2} for data structure information.
@@ -2809,7 +3152,7 @@ module.exports = {
   measureArea: require('./measureArea')
 }
 
-},{"./arePointsInside":72,"./create":73,"./flip":74,"./measureArea":76}],76:[function(require,module,exports){
+},{"./arePointsInside":74,"./create":75,"./flip":76,"./measureArea":78}],78:[function(require,module,exports){
 /**
  * Measure the area under the given polygon.
  *
@@ -2823,7 +3166,7 @@ const measureArea = (polygon) => area(polygon.vertices)
 
 module.exports = measureArea
 
-},{"../../maths/utils/area":168}],77:[function(require,module,exports){
+},{"../../maths/utils/area":170}],79:[function(require,module,exports){
 const create = require('./create')
 
 const vec3 = require('../../maths/vec3')
@@ -2853,7 +3196,7 @@ const clone = (...params) => {
 
 module.exports = clone
 
-},{"../../maths/vec3":222,"./create":78}],78:[function(require,module,exports){
+},{"../../maths/vec3":224,"./create":80}],80:[function(require,module,exports){
 
 /**
  * Represents a convex 3D polygon. The vertices used to initialize a polygon must
@@ -2879,7 +3222,7 @@ const create = (vertices) => {
 
 module.exports = create
 
-},{}],79:[function(require,module,exports){
+},{}],81:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 
 const create = require('./create')
@@ -2906,7 +3249,7 @@ const fromPoints = (points) => {
 
 module.exports = fromPoints
 
-},{"../../maths/vec3":222,"./create":78}],80:[function(require,module,exports){
+},{"../../maths/vec3":224,"./create":80}],82:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -2925,7 +3268,7 @@ const fromPointsAndPlane = (vertices, plane) => {
 
 module.exports = fromPointsAndPlane
 
-},{"./create":78}],81:[function(require,module,exports){
+},{"./create":80}],83:[function(require,module,exports){
 /**
  * Represents a convex 3D polygon consisting of a list of vertices.
  * @see {@link poly3} for data structure information.
@@ -2949,7 +3292,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./clone":77,"./create":78,"./fromPoints":79,"./fromPointsAndPlane":80,"./invert":82,"./isA":83,"./isConvex":84,"./measureArea":85,"./measureBoundingBox":86,"./measureBoundingSphere":87,"./measureSignedVolume":88,"./plane":89,"./toPoints":90,"./toString":91,"./transform":92}],82:[function(require,module,exports){
+},{"./clone":79,"./create":80,"./fromPoints":81,"./fromPointsAndPlane":82,"./invert":84,"./isA":85,"./isConvex":86,"./measureArea":87,"./measureBoundingBox":88,"./measureBoundingSphere":89,"./measureSignedVolume":90,"./plane":91,"./toPoints":92,"./toString":93,"./transform":94}],84:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -2966,7 +3309,7 @@ const invert = (polygon) => {
 
 module.exports = invert
 
-},{"./create":78}],83:[function(require,module,exports){
+},{"./create":80}],85:[function(require,module,exports){
 /**
  * Determin if the given object is a polygon.
  * @param {Object} object - the object to interogate
@@ -2986,7 +3329,7 @@ const isA = (object) => {
 
 module.exports = isA
 
-},{}],84:[function(require,module,exports){
+},{}],86:[function(require,module,exports){
 const plane = require('../../maths/plane')
 const vec3 = require('../../maths/vec3')
 
@@ -3032,7 +3375,7 @@ const isConvexPoint = (prevpoint, point, nextpoint, normal) => {
 
 module.exports = isConvex
 
-},{"../../maths/plane":163,"../../maths/vec3":222}],85:[function(require,module,exports){
+},{"../../maths/plane":165,"../../maths/vec3":224}],87:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 
 /**
@@ -3118,7 +3461,7 @@ const measureArea = (poly3) => {
 
 module.exports = measureArea
 
-},{"../../maths/vec3":222}],86:[function(require,module,exports){
+},{"../../maths/vec3":224}],88:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 
 /**
@@ -3140,7 +3483,7 @@ const measureBoundingBox = (poly3) => {
 
 module.exports = measureBoundingBox
 
-},{"../../maths/vec3":222}],87:[function(require,module,exports){
+},{"../../maths/vec3":224}],89:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 const measureBoundingBox = require('./measureBoundingBox')
 
@@ -3161,7 +3504,7 @@ const measureBoundingSphere = (poly3) => {
 
 module.exports = measureBoundingSphere
 
-},{"../../maths/vec3":222,"./measureBoundingBox":86}],88:[function(require,module,exports){
+},{"../../maths/vec3":224,"./measureBoundingBox":88}],90:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 
 /**
@@ -3188,7 +3531,7 @@ const measureSignedVolume = (poly3) => {
 
 module.exports = measureSignedVolume
 
-},{"../../maths/vec3":222}],89:[function(require,module,exports){
+},{"../../maths/vec3":224}],91:[function(require,module,exports){
 const mplane = require('../../maths/plane/')
 
 const plane = (polygon) => {
@@ -3201,7 +3544,7 @@ const plane = (polygon) => {
 
 module.exports = plane
 
-},{"../../maths/plane/":163}],90:[function(require,module,exports){
+},{"../../maths/plane/":165}],92:[function(require,module,exports){
 /**
  * Return the given geometry as a list of points.
  * NOTE: The returned array should not be modified as the points are shared with the geometry.
@@ -3213,7 +3556,7 @@ const toPoints = (geometry) => geometry.vertices
 
 module.exports = toPoints
 
-},{}],91:[function(require,module,exports){
+},{}],93:[function(require,module,exports){
 const vec3 = require('../../maths/vec3/')
 
 /**
@@ -3232,7 +3575,7 @@ const toString = (poly3) => {
 
 module.exports = toString
 
-},{"../../maths/vec3/":222}],92:[function(require,module,exports){
+},{"../../maths/vec3/":224}],94:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec3 = require('../../maths/vec3')
 
@@ -3256,7 +3599,7 @@ const transform = (matrix, poly3) => {
 
 module.exports = transform
 
-},{"../../maths/mat4":145,"../../maths/vec3":222,"./create":78}],93:[function(require,module,exports){
+},{"../../maths/mat4":147,"../../maths/vec3":224,"./create":80}],95:[function(require,module,exports){
 module.exports = {
   colors: require('./colors'),
   curves: require('./curves'),
@@ -3275,7 +3618,7 @@ module.exports = {
   transforms: require('./operations/transforms')
 }
 
-},{"./colors":16,"./curves":24,"./geometries":52,"./maths":96,"./measurements":252,"./operations/booleans":262,"./operations/expansions":293,"./operations/extrusions":306,"./operations/hulls":327,"./operations/modifiers":338,"./operations/transforms":347,"./primitives":363,"./text":376,"./utils":384}],94:[function(require,module,exports){
+},{"./colors":18,"./curves":26,"./geometries":54,"./maths":98,"./measurements":254,"./operations/booleans":264,"./operations/expansions":295,"./operations/extrusions":308,"./operations/hulls":329,"./operations/modifiers":340,"./operations/transforms":349,"./primitives":365,"./text":378,"./utils":386}],96:[function(require,module,exports){
 const mat4 = require('./mat4')
 
 const vec2 = require('./vec2')
@@ -3484,7 +3827,7 @@ OrthoNormalBasis.prototype = {
 
 module.exports = OrthoNormalBasis
 
-},{"./mat4":145,"./vec2":191,"./vec3":222}],95:[function(require,module,exports){
+},{"./mat4":147,"./vec2":193,"./vec3":224}],97:[function(require,module,exports){
 /**
  * The resolution of space, currently one hundred nanometers.
  * This should be 1 / EPS.
@@ -3506,7 +3849,7 @@ module.exports = {
   spatialResolution
 }
 
-},{}],96:[function(require,module,exports){
+},{}],98:[function(require,module,exports){
 /**
  * Maths are computational units for fundamental Euclidean geometry. All maths operate upon array data structures.
  * Note: Maths data structues are consider immutable, so never change the contents directly.
@@ -3528,7 +3871,7 @@ module.exports = {
   vec4: require('./vec4')
 }
 
-},{"./constants":95,"./line2":106,"./line3":123,"./mat4":145,"./plane":163,"./utils":170,"./vec2":191,"./vec3":222,"./vec4":248}],97:[function(require,module,exports){
+},{"./constants":97,"./line2":108,"./line3":125,"./mat4":147,"./plane":165,"./utils":172,"./vec2":193,"./vec3":224,"./vec4":250}],99:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -3548,7 +3891,7 @@ const clone = (line) => {
 
 module.exports = clone
 
-},{"./create":100}],98:[function(require,module,exports){
+},{"./create":102}],100:[function(require,module,exports){
 const vec2 = require('../vec2')
 
 const direction = require('./direction')
@@ -3581,7 +3924,7 @@ const closestPoint = (line, point) => {
 
 module.exports = closestPoint
 
-},{"../vec2":191,"./direction":101,"./origin":108}],99:[function(require,module,exports){
+},{"../vec2":193,"./direction":103,"./origin":110}],101:[function(require,module,exports){
 /**
  * Copy the given line to the receiving line.
  *
@@ -3599,7 +3942,7 @@ const copy = (out, line) => {
 
 module.exports = copy
 
-},{}],100:[function(require,module,exports){
+},{}],102:[function(require,module,exports){
 /**
  * Represents a unbounded line in 2D space, positioned at a point of origin.
  * A line is parametrized by a normal vector (perpendicular to the line, rotated 90 degrees counter clockwise) and
@@ -3621,7 +3964,7 @@ const create = () => [0, 1, 0] // normal and distance
 
 module.exports = create
 
-},{}],101:[function(require,module,exports){
+},{}],103:[function(require,module,exports){
 const vec2 = require('../vec2')
 
 /**
@@ -3639,7 +3982,7 @@ const direction = (line) => {
 
 module.exports = direction
 
-},{"../vec2":191}],102:[function(require,module,exports){
+},{"../vec2":193}],104:[function(require,module,exports){
 const vec2 = require('../vec2')
 
 /**
@@ -3658,7 +4001,7 @@ const distanceToPoint = (line, point) => {
 
 module.exports = distanceToPoint
 
-},{"../vec2":191}],103:[function(require,module,exports){
+},{"../vec2":193}],105:[function(require,module,exports){
 /**
  * Compare the given lines for equality.
  *
@@ -3671,7 +4014,7 @@ const equals = (line1, line2) => (line1[0] === line2[0]) && (line1[1] === line2[
 
 module.exports = equals
 
-},{}],104:[function(require,module,exports){
+},{}],106:[function(require,module,exports){
 const vec2 = require('../vec2')
 
 /**
@@ -3699,7 +4042,7 @@ const fromPoints = (out, point1, point2) => {
 
 module.exports = fromPoints
 
-},{"../vec2":191}],105:[function(require,module,exports){
+},{"../vec2":193}],107:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -3721,7 +4064,7 @@ const fromValues = (x, y, w) => {
 
 module.exports = fromValues
 
-},{"./create":100}],106:[function(require,module,exports){
+},{"./create":102}],108:[function(require,module,exports){
 /**
  * Represents a unbounded line in 2D space, positioned at a point of origin.
  * @see {@link line2} for data structure information.
@@ -3745,7 +4088,7 @@ module.exports = {
   xAtY: require('./xAtY')
 }
 
-},{"./clone":97,"./closestPoint":98,"./copy":99,"./create":100,"./direction":101,"./distanceToPoint":102,"./equals":103,"./fromPoints":104,"./fromValues":105,"./intersectPointOfLines":107,"./origin":108,"./reverse":109,"./toString":110,"./transform":111,"./xAtY":112}],107:[function(require,module,exports){
+},{"./clone":99,"./closestPoint":100,"./copy":101,"./create":102,"./direction":103,"./distanceToPoint":104,"./equals":105,"./fromPoints":106,"./fromValues":107,"./intersectPointOfLines":109,"./origin":110,"./reverse":111,"./toString":112,"./transform":113,"./xAtY":114}],109:[function(require,module,exports){
 const vec2 = require('../vec2')
 const { solve2Linear } = require('../utils')
 
@@ -3768,7 +4111,7 @@ const intersectToLine = (line1, line2) => {
 
 module.exports = intersectToLine
 
-},{"../utils":170,"../vec2":191}],108:[function(require,module,exports){
+},{"../utils":172,"../vec2":193}],110:[function(require,module,exports){
 const vec2 = require('../vec2')
 
 /**
@@ -3782,7 +4125,7 @@ const origin = (line) => vec2.scale(vec2.create(), line, line[2])
 
 module.exports = origin
 
-},{"../vec2":191}],109:[function(require,module,exports){
+},{"../vec2":193}],111:[function(require,module,exports){
 const vec2 = require('../vec2')
 
 const copy = require('./copy')
@@ -3804,7 +4147,7 @@ const reverse = (out, line) => {
 
 module.exports = reverse
 
-},{"../vec2":191,"./copy":99,"./fromValues":105}],110:[function(require,module,exports){
+},{"../vec2":193,"./copy":101,"./fromValues":107}],112:[function(require,module,exports){
 /**
  * Return a string representing the given line.
  *
@@ -3816,7 +4159,7 @@ const toString = (line) => `line2: (${line[0].toFixed(7)}, ${line[1].toFixed(7)}
 
 module.exports = toString
 
-},{}],111:[function(require,module,exports){
+},{}],113:[function(require,module,exports){
 const vec2 = require('../vec2')
 
 const fromPoints = require('./fromPoints')
@@ -3844,7 +4187,7 @@ const transform = (out, line, matrix) => {
 
 module.exports = transform
 
-},{"../vec2":191,"./direction":101,"./fromPoints":104,"./origin":108}],112:[function(require,module,exports){
+},{"../vec2":193,"./direction":103,"./fromPoints":106,"./origin":110}],114:[function(require,module,exports){
 const origin = require('./origin')
 
 /**
@@ -3868,7 +4211,7 @@ const xAtY = (line, y) => {
 
 module.exports = xAtY
 
-},{"./origin":108}],113:[function(require,module,exports){
+},{"./origin":110}],115:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 const create = require('./create')
@@ -3889,7 +4232,7 @@ const clone = (line) => {
 
 module.exports = clone
 
-},{"../vec3":222,"./create":116}],114:[function(require,module,exports){
+},{"../vec3":224,"./create":118}],116:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -3915,7 +4258,7 @@ const closestPoint = (line, point) => {
 
 module.exports = closestPoint
 
-},{"../vec3":222}],115:[function(require,module,exports){
+},{"../vec3":224}],117:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -3934,7 +4277,7 @@ const copy = (out, line) => {
 
 module.exports = copy
 
-},{"../vec3":222}],116:[function(require,module,exports){
+},{"../vec3":224}],118:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -3958,7 +4301,7 @@ const create = () => [
 
 module.exports = create
 
-},{"../vec3":222}],117:[function(require,module,exports){
+},{"../vec3":224}],119:[function(require,module,exports){
 /**
  * Return the direction of the given line.
  *
@@ -3970,7 +4313,7 @@ const direction = (line) => line[1]
 
 module.exports = direction
 
-},{}],118:[function(require,module,exports){
+},{}],120:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 const closestPoint = require('./closestPoint')
@@ -3991,7 +4334,7 @@ const distanceToPoint = (line, point) => {
 
 module.exports = distanceToPoint
 
-},{"../vec3":222,"./closestPoint":114}],119:[function(require,module,exports){
+},{"../vec3":224,"./closestPoint":116}],121:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -4018,7 +4361,7 @@ const equals = (line1, line2) => {
 
 module.exports = equals
 
-},{"../vec3":222}],120:[function(require,module,exports){
+},{"../vec3":224}],122:[function(require,module,exports){
 const vec3 = require('../vec3')
 const { solve2Linear } = require('../utils')
 
@@ -4067,7 +4410,7 @@ const fromPlanes = (out, plane1, plane2) => {
 
 module.exports = fromPlanes
 
-},{"../constants":95,"../utils":170,"../vec3":222,"./fromPointAndDirection":121}],121:[function(require,module,exports){
+},{"../constants":97,"../utils":172,"../vec3":224,"./fromPointAndDirection":123}],123:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -4094,7 +4437,7 @@ const fromPointAndDirection = (out, point, direction) => {
 
 module.exports = fromPointAndDirection
 
-},{"../vec3":222}],122:[function(require,module,exports){
+},{"../vec3":224}],124:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 const fromPointAndDirection = require('./fromPointAndDirection')
@@ -4115,7 +4458,7 @@ const fromPoints = (out, point1, point2) => {
 
 module.exports = fromPoints
 
-},{"../vec3":222,"./fromPointAndDirection":121}],123:[function(require,module,exports){
+},{"../vec3":224,"./fromPointAndDirection":123}],125:[function(require,module,exports){
 /**
  * Represents a unbounded line in 3D space, positioned at a point of origin.
  * @see {@link line3} for data structure information.
@@ -4139,7 +4482,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./clone":113,"./closestPoint":114,"./copy":115,"./create":116,"./direction":117,"./distanceToPoint":118,"./equals":119,"./fromPlanes":120,"./fromPointAndDirection":121,"./fromPoints":122,"./intersectPointOfLineAndPlane":124,"./origin":125,"./reverse":126,"./toString":127,"./transform":128}],124:[function(require,module,exports){
+},{"./clone":115,"./closestPoint":116,"./copy":117,"./create":118,"./direction":119,"./distanceToPoint":120,"./equals":121,"./fromPlanes":122,"./fromPointAndDirection":123,"./fromPoints":124,"./intersectPointOfLineAndPlane":126,"./origin":127,"./reverse":128,"./toString":129,"./transform":130}],126:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -4170,7 +4513,7 @@ const intersectToPlane = (line, plane) => {
 
 module.exports = intersectToPlane
 
-},{"../vec3":222}],125:[function(require,module,exports){
+},{"../vec3":224}],127:[function(require,module,exports){
 /**
  * Return the origin of the given line.
  *
@@ -4182,7 +4525,7 @@ const origin = (line) => line[0]
 
 module.exports = origin
 
-},{}],126:[function(require,module,exports){
+},{}],128:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 const fromPointAndDirection = require('./fromPointAndDirection')
@@ -4203,7 +4546,7 @@ const reverse = (out, line) => {
 
 module.exports = reverse
 
-},{"../vec3":222,"./fromPointAndDirection":121}],127:[function(require,module,exports){
+},{"../vec3":224,"./fromPointAndDirection":123}],129:[function(require,module,exports){
 /**
  * Return a string representing the given line.
  *
@@ -4219,7 +4562,7 @@ const toString = (line) => {
 
 module.exports = toString
 
-},{}],128:[function(require,module,exports){
+},{}],130:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 const fromPointAndDirection = require('./fromPointAndDirection')
@@ -4247,7 +4590,7 @@ const transform = (out, line, matrix) => {
 
 module.exports = transform
 
-},{"../vec3":222,"./fromPointAndDirection":121}],129:[function(require,module,exports){
+},{"../vec3":224,"./fromPointAndDirection":123}],131:[function(require,module,exports){
 /**
  * Adds the two matrices (A+B).
  *
@@ -4279,7 +4622,7 @@ const add = (out, a, b) => {
 
 module.exports = add
 
-},{}],130:[function(require,module,exports){
+},{}],132:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -4312,14 +4655,14 @@ const clone = (matrix) => {
 
 module.exports = clone
 
-},{"./create":133}],131:[function(require,module,exports){
+},{"./create":135}],133:[function(require,module,exports){
 const EPSILON = 0.000001
 
 module.exports = {
   EPSILON
 }
 
-},{}],132:[function(require,module,exports){
+},{}],134:[function(require,module,exports){
 /**
  * Creates a copy of the given matrix.
  *
@@ -4350,7 +4693,7 @@ const copy = (out, matrix) => {
 
 module.exports = copy
 
-},{}],133:[function(require,module,exports){
+},{}],135:[function(require,module,exports){
 /**
  * Represents a 4x4 matrix which is column-major (when typed out it looks row-major).
  * See fromValues().
@@ -4372,7 +4715,7 @@ const create = () => [
 
 module.exports = create
 
-},{}],134:[function(require,module,exports){
+},{}],136:[function(require,module,exports){
 /**
  * Returns whether or not the matrices have exactly the same elements in the same position.
  *
@@ -4390,7 +4733,7 @@ const equals = (a, b) => (
 
 module.exports = equals
 
-},{}],135:[function(require,module,exports){
+},{}],137:[function(require,module,exports){
 const identity = require('./identity')
 
 const { EPSILON } = require('./constants')
@@ -4450,7 +4793,7 @@ const fromRotation = (out, rad, axis) => {
 
 module.exports = fromRotation
 
-},{"./constants":131,"./identity":144}],136:[function(require,module,exports){
+},{"./constants":133,"./identity":146}],138:[function(require,module,exports){
 /**
  * Creates a matrix from a vector scaling.
  * This is equivalent to (but much faster than):
@@ -4487,7 +4830,7 @@ const fromScaling = (out, vector) => {
 
 module.exports = fromScaling
 
-},{}],137:[function(require,module,exports){
+},{}],139:[function(require,module,exports){
 /**
  * Creates a matrix from the given Tait–Bryan angles.
  *
@@ -4542,7 +4885,7 @@ const fromTaitBryanRotation = (out, yaw, pitch, roll) => {
 
 module.exports = fromTaitBryanRotation
 
-},{}],138:[function(require,module,exports){
+},{}],140:[function(require,module,exports){
 /**
  * Creates a matrix from a vector translation.
  * This is equivalent to (but much faster than):
@@ -4579,7 +4922,7 @@ const fromTranslation = (out, vector) => {
 
 module.exports = fromTranslation
 
-},{}],139:[function(require,module,exports){
+},{}],141:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -4634,7 +4977,7 @@ const fromValues = (m00, m01, m02, m03, m10, m11, m12, m13, m20, m21, m22, m23, 
 
 module.exports = fromValues
 
-},{"./create":133}],140:[function(require,module,exports){
+},{"./create":135}],142:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 const fromRotation = require('./fromRotation')
@@ -4685,7 +5028,7 @@ const fromVectorRotation = (out, source, target) => {
 
 module.exports = fromVectorRotation
 
-},{"../vec3":222,"./fromRotation":135}],141:[function(require,module,exports){
+},{"../vec3":224,"./fromRotation":137}],143:[function(require,module,exports){
 /**
  * Creates a matrix from the given angle around the X axis.
  * This is equivalent to (but much faster than):
@@ -4726,7 +5069,7 @@ const fromXRotation = (out, radians) => {
 
 module.exports = fromXRotation
 
-},{}],142:[function(require,module,exports){
+},{}],144:[function(require,module,exports){
 /**
  * Creates a matrix from the given angle around the Y axis.
  * This is equivalent to (but much faster than):
@@ -4767,7 +5110,7 @@ const fromYRotation = (out, radians) => {
 
 module.exports = fromYRotation
 
-},{}],143:[function(require,module,exports){
+},{}],145:[function(require,module,exports){
 /**
  * Creates a matrix from the given angle around the Z axis.
  * This is equivalent to (but much faster than):
@@ -4808,7 +5151,7 @@ const fromZRotation = (out, radians) => {
 
 module.exports = fromZRotation
 
-},{}],144:[function(require,module,exports){
+},{}],146:[function(require,module,exports){
 /**
  * Set a matrix to the identity transform.
  *
@@ -4838,7 +5181,7 @@ const identity = (out) => {
 
 module.exports = identity
 
-},{}],145:[function(require,module,exports){
+},{}],147:[function(require,module,exports){
 /**
  * Represents a 4x4 matrix which is column-major (when typed out it looks row-major).
  * @see {@link mat4} for data structure information.
@@ -4875,7 +5218,7 @@ module.exports = {
   translate: require('./translate')
 }
 
-},{"./add":129,"./clone":130,"./copy":132,"./create":133,"./equals":134,"./fromRotation":135,"./fromScaling":136,"./fromTaitBryanRotation":137,"./fromTranslation":138,"./fromValues":139,"./fromVectorRotation":140,"./fromXRotation":141,"./fromYRotation":142,"./fromZRotation":143,"./identity":144,"./invert":146,"./isIdentity":147,"./isMirroring":148,"./mirrorByPlane":149,"./multiply":150,"./rotate":151,"./rotateX":152,"./rotateY":153,"./rotateZ":154,"./scale":155,"./subtract":156,"./toString":157,"./translate":158}],146:[function(require,module,exports){
+},{"./add":131,"./clone":132,"./copy":134,"./create":135,"./equals":136,"./fromRotation":137,"./fromScaling":138,"./fromTaitBryanRotation":139,"./fromTranslation":140,"./fromValues":141,"./fromVectorRotation":142,"./fromXRotation":143,"./fromYRotation":144,"./fromZRotation":145,"./identity":146,"./invert":148,"./isIdentity":149,"./isMirroring":150,"./mirrorByPlane":151,"./multiply":152,"./rotate":153,"./rotateX":154,"./rotateY":155,"./rotateZ":156,"./scale":157,"./subtract":158,"./toString":159,"./translate":160}],148:[function(require,module,exports){
 /**
  * Creates a invert copy of the given matrix.
  * @author Julian Lloyd
@@ -4948,7 +5291,7 @@ const invert = (out, a) => {
 
 module.exports = invert
 
-},{}],147:[function(require,module,exports){
+},{}],149:[function(require,module,exports){
 /**
  * Determine whether the given matris is the identity transform.
  * This is equivalent to (but much faster than):
@@ -4970,7 +5313,7 @@ const isIdentity = (matrix) => (
 
 module.exports = isIdentity
 
-},{}],148:[function(require,module,exports){
+},{}],150:[function(require,module,exports){
 const cross = require('../vec3/cross')
 const dot = require('../vec3/dot')
 const fromValues = require('../vec3/fromValues')
@@ -4996,7 +5339,7 @@ const isMirroring = (mat) => {
 
 module.exports = isMirroring
 
-},{"../vec3/cross":214,"../vec3/dot":217,"../vec3/fromValues":220}],149:[function(require,module,exports){
+},{"../vec3/cross":216,"../vec3/dot":219,"../vec3/fromValues":222}],151:[function(require,module,exports){
 /**
  * Create a matrix for mirroring about the given plane.
  *
@@ -5030,7 +5373,7 @@ const mirrorByPlane = (out, plane) => {
 
 module.exports = mirrorByPlane
 
-},{}],150:[function(require,module,exports){
+},{}],152:[function(require,module,exports){
 /**
  * Multiplies the two matrices.
  *
@@ -5099,7 +5442,7 @@ const multiply = (out, a, b) => {
 
 module.exports = multiply
 
-},{}],151:[function(require,module,exports){
+},{}],153:[function(require,module,exports){
 const copy = require('./copy')
 
 /**
@@ -5179,7 +5522,7 @@ const rotate = (out, matrix, radians, axis) => {
 
 module.exports = rotate
 
-},{"./copy":132}],152:[function(require,module,exports){
+},{"./copy":134}],154:[function(require,module,exports){
 /**
  * Rotates a matrix by the given angle around the X axis.
  *
@@ -5226,7 +5569,7 @@ const rotateX = (out, matrix, radians) => {
 
 module.exports = rotateX
 
-},{}],153:[function(require,module,exports){
+},{}],155:[function(require,module,exports){
 /**
  * Rotates a matrix by the given angle around the Y axis.
  *
@@ -5273,7 +5616,7 @@ const rotateY = (out, matrix, radians) => {
 
 module.exports = rotateY
 
-},{}],154:[function(require,module,exports){
+},{}],156:[function(require,module,exports){
 /**
  * Rotates a matrix by the given angle around the Z axis.
  *
@@ -5320,7 +5663,7 @@ const rotateZ = (out, matrix, radians) => {
 
 module.exports = rotateZ
 
-},{}],155:[function(require,module,exports){
+},{}],157:[function(require,module,exports){
 /**
  * Scales the matrix by the given dimensions.
  *
@@ -5356,7 +5699,7 @@ const scale = (out, matrix, dimensions) => {
 
 module.exports = scale
 
-},{}],156:[function(require,module,exports){
+},{}],158:[function(require,module,exports){
 /**
  * Subtracts matrix b from matrix a. (A-B)
  *
@@ -5388,7 +5731,7 @@ const subtract = (out, a, b) => {
 
 module.exports = subtract
 
-},{}],157:[function(require,module,exports){
+},{}],159:[function(require,module,exports){
 /**
  * Return a string representing the given matrix.
  *
@@ -5400,7 +5743,7 @@ const toString = (mat) => `[${mat[0].toFixed(7)}, ${mat[1].toFixed(7)}, ${mat[2]
 
 module.exports = toString
 
-},{}],158:[function(require,module,exports){
+},{}],160:[function(require,module,exports){
 /**
  * Translate the matrix by the given offset vector.
  *
@@ -5453,7 +5796,7 @@ const translate = (out, matrix, offsets) => {
 
 module.exports = translate
 
-},{}],159:[function(require,module,exports){
+},{}],161:[function(require,module,exports){
 /**
  * Flip the given plane.
  *
@@ -5472,7 +5815,7 @@ const flip = (out, plane) => {
 
 module.exports = flip
 
-},{}],160:[function(require,module,exports){
+},{}],162:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -5506,7 +5849,7 @@ const fromNormalAndPoint = (out, normal, point) => {
 
 module.exports = fromNormalAndPoint
 
-},{"../vec3":222}],161:[function(require,module,exports){
+},{"../vec3":224}],163:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -5535,7 +5878,7 @@ const fromPoints = (out, a, b, c) => {
 
 module.exports = fromPoints
 
-},{"../vec3":222}],162:[function(require,module,exports){
+},{"../vec3":224}],164:[function(require,module,exports){
 const { EPS } = require('../constants')
 
 const vec3 = require('../vec3')
@@ -5579,7 +5922,7 @@ const fromPointsRandom = (out, a, b, c) => {
 
 module.exports = fromPointsRandom
 
-},{"../constants":95,"../vec3":222}],163:[function(require,module,exports){
+},{"../constants":97,"../vec3":224}],165:[function(require,module,exports){
 /**
  * Represents a plane in 3D coordinate space as determined by a normal (perpendicular to the plane)
  * and distance from 0,0,0.
@@ -5626,7 +5969,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"../vec4/clone":241,"../vec4/copy":242,"../vec4/create":243,"../vec4/equals":245,"../vec4/fromValues":247,"../vec4/toString":249,"./flip":159,"./fromNormalAndPoint":160,"./fromPoints":161,"./fromPointsRandom":162,"./projectionOfPoint":164,"./signedDistanceToPoint":165,"./transform":166}],164:[function(require,module,exports){
+},{"../vec4/clone":243,"../vec4/copy":244,"../vec4/create":245,"../vec4/equals":247,"../vec4/fromValues":249,"../vec4/toString":251,"./flip":161,"./fromNormalAndPoint":162,"./fromPoints":163,"./fromPointsRandom":164,"./projectionOfPoint":166,"./signedDistanceToPoint":167,"./transform":168}],166:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -5647,7 +5990,7 @@ const projectionOfPoint = (plane, point) => {
 
 module.exports = projectionOfPoint
 
-},{"../vec3":222}],165:[function(require,module,exports){
+},{"../vec3":224}],167:[function(require,module,exports){
 const vec3 = require('../vec3')
 
 /**
@@ -5662,7 +6005,7 @@ const signedDistanceToPoint = (plane, vector) => vec3.dot(plane, vector) - plane
 
 module.exports = signedDistanceToPoint
 
-},{"../vec3":222}],166:[function(require,module,exports){
+},{"../vec3":224}],168:[function(require,module,exports){
 const mat4 = require('../mat4')
 const vec3 = require('../vec3')
 
@@ -5704,7 +6047,7 @@ const transform = (out, plane, matrix) => {
 
 module.exports = transform
 
-},{"../mat4":145,"../vec3":222,"./flip":159,"./fromPoints":161}],167:[function(require,module,exports){
+},{"../mat4":147,"../vec3":224,"./flip":161,"./fromPoints":163}],169:[function(require,module,exports){
 // Normals are directional vectors with component values from 0 to 1.0, requiring specialized comparision
 // This EPS is derived from a serieas of tests to determine the optimal precision for comparing coplanar polygons,
 // as provided by the sphere primitive at high segmentation
@@ -5721,7 +6064,7 @@ const aboutEqualNormals = (a, b) => (Math.abs(a[0] - b[0]) <= NEPS && Math.abs(a
 
 module.exports = aboutEqualNormals
 
-},{}],168:[function(require,module,exports){
+},{}],170:[function(require,module,exports){
 /*
  * Calculate the area under the given points
  */
@@ -5737,13 +6080,13 @@ const area = (points) => {
 
 module.exports = area
 
-},{}],169:[function(require,module,exports){
+},{}],171:[function(require,module,exports){
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max)
 
 module.exports = clamp
 
-},{}],170:[function(require,module,exports){
+},{}],172:[function(require,module,exports){
 module.exports = {
   aboutEqualNormals: require('./aboutEqualNormals'),
   area: require('./area'),
@@ -5753,7 +6096,7 @@ module.exports = {
   solve2Linear: require('./solve2Linear')
 }
 
-},{"./aboutEqualNormals":167,"./area":168,"./clamp":169,"./interpolateBetween2DPointsForY":171,"./intersect":172,"./solve2Linear":173}],171:[function(require,module,exports){
+},{"./aboutEqualNormals":169,"./area":170,"./clamp":171,"./interpolateBetween2DPointsForY":173,"./intersect":174,"./solve2Linear":175}],173:[function(require,module,exports){
 /**
  * Get the X coordinate of a point with a certain Y coordinate, interpolated between two points.
  * Interpolation is robust even if the points have the same Y coordinate
@@ -5783,7 +6126,7 @@ const interpolateBetween2DPointsForY = (point1, point2, y) => {
 
 module.exports = interpolateBetween2DPointsForY
 
-},{}],172:[function(require,module,exports){
+},{}],174:[function(require,module,exports){
 /*
  * Calculate the intersect point of the two line segments (p1-p2 and p3-p4), end points included.
  * Note: If the line segments do NOT intersect then undefined is returned.
@@ -5824,7 +6167,7 @@ const intersect = (p1, p2, p3, p4) => {
 
 module.exports = intersect
 
-},{}],173:[function(require,module,exports){
+},{}],175:[function(require,module,exports){
 const solve2Linear = (a, b, c, d, u, v) => {
   const det = a * d - b * c
   const invdet = 1.0 / det
@@ -5837,7 +6180,7 @@ const solve2Linear = (a, b, c, d, u, v) => {
 
 module.exports = solve2Linear
 
-},{}],174:[function(require,module,exports){
+},{}],176:[function(require,module,exports){
 /**
  * Calculates the absolute coordinates of the given vector.
  *
@@ -5854,7 +6197,7 @@ const abs = (out, vector) => {
 
 module.exports = abs
 
-},{}],175:[function(require,module,exports){
+},{}],177:[function(require,module,exports){
 /**
  * Adds the coordinates of two vectors (A+B).
  *
@@ -5872,10 +6215,10 @@ const add = (out, a, b) => {
 
 module.exports = add
 
-},{}],176:[function(require,module,exports){
+},{}],178:[function(require,module,exports){
 module.exports = require('./angleRadians')
 
-},{"./angleRadians":178}],177:[function(require,module,exports){
+},{"./angleRadians":180}],179:[function(require,module,exports){
 const angleRadians = require('./angleRadians')
 
 /**
@@ -5889,7 +6232,7 @@ const angleDegrees = (vector) => angleRadians(vector) * 57.29577951308232
 
 module.exports = angleDegrees
 
-},{"./angleRadians":178}],178:[function(require,module,exports){
+},{"./angleRadians":180}],180:[function(require,module,exports){
 /**
  * Calculate the angle of the given vector.
  *
@@ -5901,7 +6244,7 @@ const angleRadians = (vector) => Math.atan2(vector[1], vector[0]) // y=sin, x=co
 
 module.exports = angleRadians
 
-},{}],179:[function(require,module,exports){
+},{}],181:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -5920,7 +6263,7 @@ const clone = (vector) => {
 
 module.exports = clone
 
-},{"./create":181}],180:[function(require,module,exports){
+},{"./create":183}],182:[function(require,module,exports){
 /**
  * Create a copy of the given vector.
  *
@@ -5937,7 +6280,7 @@ const copy = (out, vector) => {
 
 module.exports = copy
 
-},{}],181:[function(require,module,exports){
+},{}],183:[function(require,module,exports){
 /**
  * Represents a two dimensional vector.
  * See fromValues().
@@ -5954,7 +6297,7 @@ const create = () => [0, 0]
 
 module.exports = create
 
-},{}],182:[function(require,module,exports){
+},{}],184:[function(require,module,exports){
 /**
  * Computes the cross product (3D) of two vectors.
  *
@@ -5973,7 +6316,7 @@ const cross = (out, a, b) => {
 
 module.exports = cross
 
-},{}],183:[function(require,module,exports){
+},{}],185:[function(require,module,exports){
 /**
  * Calculates the distance between two vectors.
  *
@@ -5990,7 +6333,7 @@ const distance = (a, b) => {
 
 module.exports = distance
 
-},{}],184:[function(require,module,exports){
+},{}],186:[function(require,module,exports){
 /**
  * Divides the coordinates of two vectors (A/B).
  *
@@ -6008,7 +6351,7 @@ const divide = (out, a, b) => {
 
 module.exports = divide
 
-},{}],185:[function(require,module,exports){
+},{}],187:[function(require,module,exports){
 /**
  * Calculates the dot product of two vectors.
  *
@@ -6021,7 +6364,7 @@ const dot = (a, b) => a[0] * b[0] + a[1] * b[1]
 
 module.exports = dot
 
-},{}],186:[function(require,module,exports){
+},{}],188:[function(require,module,exports){
 /**
  * Compare the given vectors for equality.
  *
@@ -6034,7 +6377,7 @@ const equals = (a, b) => (a[0] === b[0]) && (a[1] === b[1])
 
 module.exports = equals
 
-},{}],187:[function(require,module,exports){
+},{}],189:[function(require,module,exports){
 const fromAngleRadians = require('./fromAngleRadians')
 
 /**
@@ -6049,7 +6392,7 @@ const fromAngleDegrees = (out, degrees) => fromAngleRadians(out, Math.PI * degre
 
 module.exports = fromAngleDegrees
 
-},{"./fromAngleRadians":188}],188:[function(require,module,exports){
+},{"./fromAngleRadians":190}],190:[function(require,module,exports){
 /**
  * Create a new vector in the direction of the given angle.
  *
@@ -6066,7 +6409,7 @@ const fromAngleRadians = (out, radians) => {
 
 module.exports = fromAngleRadians
 
-},{}],189:[function(require,module,exports){
+},{}],191:[function(require,module,exports){
 /**
  * Create a vector from a single scalar value.
  *
@@ -6083,7 +6426,7 @@ const fromScalar = (out, scalar) => {
 
 module.exports = fromScalar
 
-},{}],190:[function(require,module,exports){
+},{}],192:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -6103,7 +6446,7 @@ const fromValues = (x, y) => {
 
 module.exports = fromValues
 
-},{"./create":181}],191:[function(require,module,exports){
+},{"./create":183}],193:[function(require,module,exports){
 /**
  * Represents a two dimensional vector.
  * @module modeling/maths/vec2
@@ -6144,7 +6487,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./abs":174,"./add":175,"./angle":176,"./angleDegrees":177,"./angleRadians":178,"./clone":179,"./copy":180,"./create":181,"./cross":182,"./distance":183,"./divide":184,"./dot":185,"./equals":186,"./fromAngleDegrees":187,"./fromAngleRadians":188,"./fromScalar":189,"./fromValues":190,"./length":192,"./lerp":193,"./max":194,"./min":195,"./multiply":196,"./negate":197,"./normal":198,"./normalize":199,"./rotate":200,"./scale":201,"./snap":202,"./squaredDistance":203,"./squaredLength":204,"./subtract":205,"./toString":206,"./transform":207}],192:[function(require,module,exports){
+},{"./abs":176,"./add":177,"./angle":178,"./angleDegrees":179,"./angleRadians":180,"./clone":181,"./copy":182,"./create":183,"./cross":184,"./distance":185,"./divide":186,"./dot":187,"./equals":188,"./fromAngleDegrees":189,"./fromAngleRadians":190,"./fromScalar":191,"./fromValues":192,"./length":194,"./lerp":195,"./max":196,"./min":197,"./multiply":198,"./negate":199,"./normal":200,"./normalize":201,"./rotate":202,"./scale":203,"./snap":204,"./squaredDistance":205,"./squaredLength":206,"./subtract":207,"./toString":208,"./transform":209}],194:[function(require,module,exports){
 /**
  * Calculates the length of the given vector.
  *
@@ -6156,7 +6499,7 @@ const length = (a) => Math.hypot(a[0], a[1])
 
 module.exports = length
 
-},{}],193:[function(require,module,exports){
+},{}],195:[function(require,module,exports){
 /**
  * Performs a linear interpolation between two vectors.
  *
@@ -6177,7 +6520,7 @@ const lerp = (out, a, b, t) => {
 
 module.exports = lerp
 
-},{}],194:[function(require,module,exports){
+},{}],196:[function(require,module,exports){
 /**
  * Returns the maximum coordinates of two vectors.
  *
@@ -6195,7 +6538,7 @@ const max = (out, a, b) => {
 
 module.exports = max
 
-},{}],195:[function(require,module,exports){
+},{}],197:[function(require,module,exports){
 /**
  * Returns the minimum coordinates of two vectors.
  *
@@ -6213,7 +6556,7 @@ const min = (out, a, b) => {
 
 module.exports = min
 
-},{}],196:[function(require,module,exports){
+},{}],198:[function(require,module,exports){
 /**
  * Multiplies the coordinates of two vectors (A*B).
  *
@@ -6231,7 +6574,7 @@ const multiply = (out, a, b) => {
 
 module.exports = multiply
 
-},{}],197:[function(require,module,exports){
+},{}],199:[function(require,module,exports){
 /**
  * Negates the coordinates of the given vector.
  *
@@ -6248,7 +6591,7 @@ const negate = (out, vector) => {
 
 module.exports = negate
 
-},{}],198:[function(require,module,exports){
+},{}],200:[function(require,module,exports){
 const create = require('./create')
 const rotate = require('./rotate')
 
@@ -6265,7 +6608,7 @@ const normal = (out, vector) => rotate(out, vector, create(), (Math.PI / 2))
 
 module.exports = normal
 
-},{"./create":181,"./rotate":200}],199:[function(require,module,exports){
+},{"./create":183,"./rotate":202}],201:[function(require,module,exports){
 /**
  * Normalize the given vector.
  *
@@ -6290,7 +6633,7 @@ const normalize = (out, vector) => {
 
 module.exports = normalize
 
-},{}],200:[function(require,module,exports){
+},{}],202:[function(require,module,exports){
 /**
  * Rotates the given vector by the given angle.
  *
@@ -6315,7 +6658,7 @@ const rotate = (out, vector, origin, radians) => {
 
 module.exports = rotate
 
-},{}],201:[function(require,module,exports){
+},{}],203:[function(require,module,exports){
 /**
  * Scales the coordinates of the given vector.
  *
@@ -6333,7 +6676,7 @@ const scale = (out, vector, amount) => {
 
 module.exports = scale
 
-},{}],202:[function(require,module,exports){
+},{}],204:[function(require,module,exports){
 /**
  * Snaps the coordinates of the given vector to the given epsilon.
  *
@@ -6351,7 +6694,7 @@ const snap = (out, vector, epsilon) => {
 
 module.exports = snap
 
-},{}],203:[function(require,module,exports){
+},{}],205:[function(require,module,exports){
 /**
  * Calculates the squared distance between the given vectors.
  *
@@ -6368,7 +6711,7 @@ const squaredDistance = (a, b) => {
 
 module.exports = squaredDistance
 
-},{}],204:[function(require,module,exports){
+},{}],206:[function(require,module,exports){
 /**
  * Calculates the squared length of the given vector.
  *
@@ -6384,7 +6727,7 @@ const squaredLength = (a) => {
 
 module.exports = squaredLength
 
-},{}],205:[function(require,module,exports){
+},{}],207:[function(require,module,exports){
 /**
  * Subtracts the coordinates of two vectors (A-B).
  *
@@ -6402,7 +6745,7 @@ const subtract = (out, a, b) => {
 
 module.exports = subtract
 
-},{}],206:[function(require,module,exports){
+},{}],208:[function(require,module,exports){
 /**
  * Convert the given vector to a representative string.
  *
@@ -6414,7 +6757,7 @@ const toString = (vec) => `[${vec[0].toFixed(7)}, ${vec[1].toFixed(7)}]`
 
 module.exports = toString
 
-},{}],207:[function(require,module,exports){
+},{}],209:[function(require,module,exports){
 /**
  * Transforms the given vector using the given matrix.
  *
@@ -6434,7 +6777,7 @@ const transform = (out, vector, matrix) => {
 
 module.exports = transform
 
-},{}],208:[function(require,module,exports){
+},{}],210:[function(require,module,exports){
 /**
  * Calculates the absolute coordinates of the give vector.
  *
@@ -6452,7 +6795,7 @@ const abs = (out, vector) => {
 
 module.exports = abs
 
-},{}],209:[function(require,module,exports){
+},{}],211:[function(require,module,exports){
 /**
  * Adds the coordinates of two vectors (A+B).
  *
@@ -6471,7 +6814,7 @@ const add = (out, a, b) => {
 
 module.exports = add
 
-},{}],210:[function(require,module,exports){
+},{}],212:[function(require,module,exports){
 const dot = require('./dot')
 
 /**
@@ -6498,7 +6841,7 @@ const angle = (a, b) => {
 
 module.exports = angle
 
-},{"./dot":217}],211:[function(require,module,exports){
+},{"./dot":219}],213:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -6518,7 +6861,7 @@ const clone = (vector) => {
 
 module.exports = clone
 
-},{"./create":213}],212:[function(require,module,exports){
+},{"./create":215}],214:[function(require,module,exports){
 /**
  * Create a copy of the given vector.
  *
@@ -6536,7 +6879,7 @@ const copy = (out, vector) => {
 
 module.exports = copy
 
-},{}],213:[function(require,module,exports){
+},{}],215:[function(require,module,exports){
 /**
  * Represents a three dimensional vector.
  * See fromValues().
@@ -6553,7 +6896,7 @@ const create = () => [0, 0, 0]
 
 module.exports = create
 
-},{}],214:[function(require,module,exports){
+},{}],216:[function(require,module,exports){
 /**
  * Computes the cross product of the given vectors (AxB).
  *
@@ -6579,7 +6922,7 @@ const cross = (out, a, b) => {
 
 module.exports = cross
 
-},{}],215:[function(require,module,exports){
+},{}],217:[function(require,module,exports){
 /**
  * Calculates the Euclidian distance between the given vectors.
  *
@@ -6597,7 +6940,7 @@ const distance = (a, b) => {
 
 module.exports = distance
 
-},{}],216:[function(require,module,exports){
+},{}],218:[function(require,module,exports){
 /**
  * Divides the coordinates of two vectors (A/B).
  *
@@ -6616,7 +6959,7 @@ const divide = (out, a, b) => {
 
 module.exports = divide
 
-},{}],217:[function(require,module,exports){
+},{}],219:[function(require,module,exports){
 /**
  * Calculates the dot product of two vectors.
  *
@@ -6629,7 +6972,7 @@ const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 module.exports = dot
 
-},{}],218:[function(require,module,exports){
+},{}],220:[function(require,module,exports){
 /**
  * Compare the given vectors for equality.
  *
@@ -6642,7 +6985,7 @@ const equals = (a, b) => (a[0] === b[0]) && (a[1] === b[1]) && (a[2] === b[2])
 
 module.exports = equals
 
-},{}],219:[function(require,module,exports){
+},{}],221:[function(require,module,exports){
 /**
  * Creates a vector from a single scalar value.
  * All components of the resulting vector have the given value.
@@ -6661,7 +7004,7 @@ const fromScalar = (out, scalar) => {
 
 module.exports = fromScalar
 
-},{}],220:[function(require,module,exports){
+},{}],222:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -6683,7 +7026,7 @@ const fromValues = (x, y, z) => {
 
 module.exports = fromValues
 
-},{"./create":213}],221:[function(require,module,exports){
+},{"./create":215}],223:[function(require,module,exports){
 /**
  * Create a new vector by extending a 2D vector with a Z value.
  *
@@ -6702,7 +7045,7 @@ const fromVector2 = (out, vec2, z = 0) => {
 
 module.exports = fromVector2
 
-},{}],222:[function(require,module,exports){
+},{}],224:[function(require,module,exports){
 /**
  * Represents a three dimensional vector.
  * @see {@link vec3} for data structure information.
@@ -6743,7 +7086,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./abs":208,"./add":209,"./angle":210,"./clone":211,"./copy":212,"./create":213,"./cross":214,"./distance":215,"./divide":216,"./dot":217,"./equals":218,"./fromScalar":219,"./fromValues":220,"./fromVec2":221,"./length":223,"./lerp":224,"./max":225,"./min":226,"./multiply":227,"./negate":228,"./normalize":229,"./orthogonal":230,"./rotateX":231,"./rotateY":232,"./rotateZ":233,"./scale":234,"./snap":235,"./squaredDistance":236,"./squaredLength":237,"./subtract":238,"./toString":239,"./transform":240}],223:[function(require,module,exports){
+},{"./abs":210,"./add":211,"./angle":212,"./clone":213,"./copy":214,"./create":215,"./cross":216,"./distance":217,"./divide":218,"./dot":219,"./equals":220,"./fromScalar":221,"./fromValues":222,"./fromVec2":223,"./length":225,"./lerp":226,"./max":227,"./min":228,"./multiply":229,"./negate":230,"./normalize":231,"./orthogonal":232,"./rotateX":233,"./rotateY":234,"./rotateZ":235,"./scale":236,"./snap":237,"./squaredDistance":238,"./squaredLength":239,"./subtract":240,"./toString":241,"./transform":242}],225:[function(require,module,exports){
 /**
  * Calculates the length of a vector.
  *
@@ -6760,7 +7103,7 @@ const length = (a) => {
 
 module.exports = length
 
-},{}],224:[function(require,module,exports){
+},{}],226:[function(require,module,exports){
 /**
  * Performs a linear interpolation between two vectors.
  *
@@ -6780,7 +7123,7 @@ const lerp = (out, a, b, t) => {
 
 module.exports = lerp
 
-},{}],225:[function(require,module,exports){
+},{}],227:[function(require,module,exports){
 /**
  * Returns the maximum coordinates of the given vectors.
  *
@@ -6799,7 +7142,7 @@ const max = (out, a, b) => {
 
 module.exports = max
 
-},{}],226:[function(require,module,exports){
+},{}],228:[function(require,module,exports){
 /**
  * Returns the minimum coordinates of the given vectors.
  *
@@ -6818,7 +7161,7 @@ const min = (out, a, b) => {
 
 module.exports = min
 
-},{}],227:[function(require,module,exports){
+},{}],229:[function(require,module,exports){
 /**
  * Multiply the coordinates of the given vectors (A*B).
  *
@@ -6837,7 +7180,7 @@ const multiply = (out, a, b) => {
 
 module.exports = multiply
 
-},{}],228:[function(require,module,exports){
+},{}],230:[function(require,module,exports){
 /**
  * Negates the coordinates of the given vector.
  *
@@ -6855,7 +7198,7 @@ const negate = (out, vector) => {
 
 module.exports = negate
 
-},{}],229:[function(require,module,exports){
+},{}],231:[function(require,module,exports){
 /**
  * Normalize the given vector.
  *
@@ -6880,7 +7223,7 @@ const normalize = (out, vector) => {
 
 module.exports = normalize
 
-},{}],230:[function(require,module,exports){
+},{}],232:[function(require,module,exports){
 const abs = require('./abs')
 const create = require('./create')
 const cross = require('./cross')
@@ -6904,7 +7247,7 @@ const orthogonal = (out, vector) => {
 
 module.exports = orthogonal
 
-},{"./abs":208,"./create":213,"./cross":214}],231:[function(require,module,exports){
+},{"./abs":210,"./create":215,"./cross":216}],233:[function(require,module,exports){
 /**
  * Rotate the given vector around the given origin, X axis only.
  *
@@ -6939,7 +7282,7 @@ const rotateX = (out, vector, origin, radians) => {
 
 module.exports = rotateX
 
-},{}],232:[function(require,module,exports){
+},{}],234:[function(require,module,exports){
 /**
  * Rotate the given vector around the given origin, Y axis only.
  *
@@ -6974,7 +7317,7 @@ const rotateY = (out, vector, origin, radians) => {
 
 module.exports = rotateY
 
-},{}],233:[function(require,module,exports){
+},{}],235:[function(require,module,exports){
 /**
  * Rotate the given vector around the given origin, Z axis only.
  *
@@ -7006,7 +7349,7 @@ const rotateZ = (out, vector, origin, radians) => {
 
 module.exports = rotateZ
 
-},{}],234:[function(require,module,exports){
+},{}],236:[function(require,module,exports){
 /**
  * Scales the coordinates of the given vector by a scalar number.
  *
@@ -7025,7 +7368,7 @@ const scale = (out, vector, amount) => {
 
 module.exports = scale
 
-},{}],235:[function(require,module,exports){
+},{}],237:[function(require,module,exports){
 /**
  * Snaps the coordinates of the given vector to the given epsilon.
  *
@@ -7044,7 +7387,7 @@ const snap = (out, vector, epsilon) => {
 
 module.exports = snap
 
-},{}],236:[function(require,module,exports){
+},{}],238:[function(require,module,exports){
 /**
  * Calculates the squared distance between two vectors.
  *
@@ -7062,7 +7405,7 @@ const squaredDistance = (a, b) => {
 
 module.exports = squaredDistance
 
-},{}],237:[function(require,module,exports){
+},{}],239:[function(require,module,exports){
 /**
  * Calculates the squared length of the given vector.
  *
@@ -7079,7 +7422,7 @@ const squaredLength = (a) => {
 
 module.exports = squaredLength
 
-},{}],238:[function(require,module,exports){
+},{}],240:[function(require,module,exports){
 /**
  * Subtracts the coordinates of two vectors (A-B).
  *
@@ -7098,7 +7441,7 @@ const subtract = (out, a, b) => {
 
 module.exports = subtract
 
-},{}],239:[function(require,module,exports){
+},{}],241:[function(require,module,exports){
 /**
  * Convert the given vector to a representative string.
  * @param {vec3} vector - vector of reference
@@ -7109,7 +7452,7 @@ const toString = (vec) => `[${vec[0].toFixed(7)}, ${vec[1].toFixed(7)}, ${vec[2]
 
 module.exports = toString
 
-},{}],240:[function(require,module,exports){
+},{}],242:[function(require,module,exports){
 /**
  * Transforms the given vector using the given matrix.
  *
@@ -7133,7 +7476,7 @@ const transform = (out, vector, matrix) => {
 
 module.exports = transform
 
-},{}],241:[function(require,module,exports){
+},{}],243:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -7154,7 +7497,7 @@ const clone = (vector) => {
 
 module.exports = clone
 
-},{"./create":243}],242:[function(require,module,exports){
+},{"./create":245}],244:[function(require,module,exports){
 /**
  * Create a copy of the given vector.
  *
@@ -7173,7 +7516,7 @@ const copy = (out, vector) => {
 
 module.exports = copy
 
-},{}],243:[function(require,module,exports){
+},{}],245:[function(require,module,exports){
 /**
  * Represents a four dimensional vector.
  * See fromValues().
@@ -7190,7 +7533,7 @@ const create = () => [0, 0, 0, 0]
 
 module.exports = create
 
-},{}],244:[function(require,module,exports){
+},{}],246:[function(require,module,exports){
 /**
  * Calculates the dot product of the given vectors.
  *
@@ -7203,7 +7546,7 @@ const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
 
 module.exports = dot
 
-},{}],245:[function(require,module,exports){
+},{}],247:[function(require,module,exports){
 /**
  * Compare the given vectors for equality.
  *
@@ -7216,7 +7559,7 @@ const equals = (a, b) => ((a[0] === b[0]) && (a[1] === b[1]) && (a[2] === b[2]) 
 
 module.exports = equals
 
-},{}],246:[function(require,module,exports){
+},{}],248:[function(require,module,exports){
 /**
  * Create a new vector from the given scalar value.
  *
@@ -7235,7 +7578,7 @@ const fromScalar = (out, scalar) => {
 
 module.exports = fromScalar
 
-},{}],247:[function(require,module,exports){
+},{}],249:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -7259,7 +7602,7 @@ const fromValues = (x, y, z, w) => {
 
 module.exports = fromValues
 
-},{"./create":243}],248:[function(require,module,exports){
+},{"./create":245}],250:[function(require,module,exports){
 /**
  * Represents a four dimensional vector.
  * @see {@link vec4} for data structure information.
@@ -7277,7 +7620,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./clone":241,"./copy":242,"./create":243,"./dot":244,"./equals":245,"./fromScalar":246,"./fromValues":247,"./toString":249,"./transform":250}],249:[function(require,module,exports){
+},{"./clone":243,"./copy":244,"./create":245,"./dot":246,"./equals":247,"./fromScalar":248,"./fromValues":249,"./toString":251,"./transform":252}],251:[function(require,module,exports){
 /**
  * Convert the given vector to a representative string.
  *
@@ -7289,7 +7632,7 @@ const toString = (vec) => `(${vec[0].toFixed(9)}, ${vec[1].toFixed(9)}, ${vec[2]
 
 module.exports = toString
 
-},{}],250:[function(require,module,exports){
+},{}],252:[function(require,module,exports){
 /**
  * Transform the given vector using the given matrix.
  *
@@ -7311,7 +7654,7 @@ const transform = (out, vector, matrix) => {
 
 module.exports = transform
 
-},{}],251:[function(require,module,exports){
+},{}],253:[function(require,module,exports){
 const { EPS } = require('../maths/constants')
 
 const calculateEpsilonFromBounds = (bounds, dimensions) => {
@@ -7324,7 +7667,7 @@ const calculateEpsilonFromBounds = (bounds, dimensions) => {
 
 module.exports = calculateEpsilonFromBounds
 
-},{"../maths/constants":95}],252:[function(require,module,exports){
+},{"../maths/constants":97}],254:[function(require,module,exports){
 /**
  * All shapes (primitives or the results of operations) can be measured, e.g. calculate volume, etc.
  * In all cases, the function returns the results, and never changes the original shapes.
@@ -7343,7 +7686,7 @@ module.exports = {
   measureVolume: require('./measureVolume')
 }
 
-},{"./measureAggregateArea":253,"./measureAggregateBoundingBox":254,"./measureAggregateEpsilon":255,"./measureAggregateVolume":256,"./measureArea":257,"./measureBoundingBox":258,"./measureEpsilon":259,"./measureVolume":260}],253:[function(require,module,exports){
+},{"./measureAggregateArea":255,"./measureAggregateBoundingBox":256,"./measureAggregateEpsilon":257,"./measureAggregateVolume":258,"./measureArea":259,"./measureBoundingBox":260,"./measureEpsilon":261,"./measureVolume":262}],255:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 const measureArea = require('./measureArea')
@@ -7371,7 +7714,7 @@ const measureAggregateArea = (...geometries) => {
 
 module.exports = measureAggregateArea
 
-},{"../utils/flatten":382,"./measureArea":257}],254:[function(require,module,exports){
+},{"../utils/flatten":384,"./measureArea":259}],256:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 const vec3min = require('../maths/vec3/min')
 const vec3max = require('../maths/vec3/max')
@@ -7403,7 +7746,7 @@ const measureAggregateBoundingBox = (...geometries) => {
 
 module.exports = measureAggregateBoundingBox
 
-},{"../maths/vec3/max":225,"../maths/vec3/min":226,"../utils/flatten":382,"./measureBoundingBox":258}],255:[function(require,module,exports){
+},{"../maths/vec3/max":227,"../maths/vec3/min":228,"../utils/flatten":384,"./measureBoundingBox":260}],257:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 const measureAggregateBoundingBox = require('./measureAggregateBoundingBox')
 const calculateEpsilonFromBounds = require('./calculateEpsilonFromBounds')
@@ -7434,7 +7777,7 @@ const measureAggregateEpsilon = (...geometries) => {
 
 module.exports = measureAggregateEpsilon
 
-},{"../geometries":52,"../utils/flatten":382,"./calculateEpsilonFromBounds":251,"./measureAggregateBoundingBox":254}],256:[function(require,module,exports){
+},{"../geometries":54,"../utils/flatten":384,"./calculateEpsilonFromBounds":253,"./measureAggregateBoundingBox":256}],258:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 const measureVolume = require('./measureVolume')
@@ -7462,7 +7805,7 @@ const measureAggregateVolume = (...geometries) => {
 
 module.exports = measureAggregateVolume
 
-},{"../utils/flatten":382,"./measureVolume":260}],257:[function(require,module,exports){
+},{"../utils/flatten":384,"./measureVolume":262}],259:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 const geom2 = require('../geometries/geom2')
@@ -7544,7 +7887,7 @@ const measureArea = (...geometries) => {
 
 module.exports = measureArea
 
-},{"../geometries/geom2":30,"../geometries/geom3":44,"../geometries/path2":65,"../geometries/poly3":81,"../utils/flatten":382}],258:[function(require,module,exports){
+},{"../geometries/geom2":32,"../geometries/geom3":46,"../geometries/path2":67,"../geometries/poly3":83,"../utils/flatten":384}],260:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 const vec2 = require('../maths/vec2')
@@ -7680,7 +8023,7 @@ const measureBoundingBox = (...geometries) => {
 
 module.exports = measureBoundingBox
 
-},{"../geometries/geom2":30,"../geometries/geom3":44,"../geometries/path2":65,"../geometries/poly3":81,"../maths/vec2":191,"../maths/vec3":222,"../utils/flatten":382}],259:[function(require,module,exports){
+},{"../geometries/geom2":32,"../geometries/geom3":46,"../geometries/path2":67,"../geometries/poly3":83,"../maths/vec2":193,"../maths/vec3":224,"../utils/flatten":384}],261:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 const { geom2, geom3, path2 } = require('../geometries')
 
@@ -7736,7 +8079,7 @@ const measureEpsilon = (...geometries) => {
 
 module.exports = measureEpsilon
 
-},{"../geometries":52,"../utils/flatten":382,"./calculateEpsilonFromBounds":251,"./measureBoundingBox":258}],260:[function(require,module,exports){
+},{"../geometries":54,"../utils/flatten":384,"./calculateEpsilonFromBounds":253,"./measureBoundingBox":260}],262:[function(require,module,exports){
 const flatten = require('../utils/flatten')
 
 const geom2 = require('../geometries/geom2')
@@ -7806,7 +8149,7 @@ const measureVolume = (...geometries) => {
 
 module.exports = measureVolume
 
-},{"../geometries/geom2":30,"../geometries/geom3":44,"../geometries/path2":65,"../geometries/poly3":81,"../utils/flatten":382}],261:[function(require,module,exports){
+},{"../geometries/geom2":32,"../geometries/geom3":46,"../geometries/path2":67,"../geometries/poly3":83,"../utils/flatten":384}],263:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 
 const geom2 = require('../../geometries/geom2')
@@ -7860,7 +8203,7 @@ const fromFakePolygons = (epsilon, polygons) => {
 
 module.exports = fromFakePolygons
 
-},{"../../geometries/geom2":30,"../../maths/vec2":191}],262:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../maths/vec2":193}],264:[function(require,module,exports){
 /**
  * All shapes (primitives or the results of operations) can be passed to boolean functions
  * to perform logical operations, e.g. remove a hole from a board.
@@ -7876,7 +8219,7 @@ module.exports = {
   union: require('./union')
 }
 
-},{"./intersect":263,"./scission":270,"./subtract":272,"./union":283}],263:[function(require,module,exports){
+},{"./intersect":265,"./scission":272,"./subtract":274,"./union":285}],265:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 const areAllShapesTheSameType = require('../../utils/areAllShapesTheSameType')
 
@@ -7925,7 +8268,7 @@ const intersect = (...geometries) => {
 
 module.exports = intersect
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../utils/areAllShapesTheSameType":380,"../../utils/flatten":382,"./intersectGeom2":264,"./intersectGeom3":265}],264:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../utils/areAllShapesTheSameType":382,"../../utils/flatten":384,"./intersectGeom2":266,"./intersectGeom3":267}],266:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom3 = require('../../geometries/geom3')
@@ -7954,7 +8297,7 @@ const intersect = (...geometries) => {
 
 module.exports = intersect
 
-},{"../../geometries/geom3":44,"../../measurements/measureEpsilon":259,"../../utils/flatten":382,"./fromFakePolygons":261,"./intersectGeom3":265,"./to3DWalls":276}],265:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../measurements/measureEpsilon":261,"../../utils/flatten":384,"./fromFakePolygons":263,"./intersectGeom3":267,"./to3DWalls":278}],267:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const retessellate = require('./retessellate')
@@ -7980,7 +8323,7 @@ const intersect = (...geometries) => {
 
 module.exports = intersect
 
-},{"../../utils/flatten":382,"./intersectGeom3Sub":266,"./retessellate":269}],266:[function(require,module,exports){
+},{"../../utils/flatten":384,"./intersectGeom3Sub":268,"./retessellate":271}],268:[function(require,module,exports){
 const geom3 = require('../../geometries/geom3')
 
 const mayOverlap = require('./mayOverlap')
@@ -8015,7 +8358,7 @@ const intersectGeom3Sub = (geometry1, geometry2) => {
 
 module.exports = intersectGeom3Sub
 
-},{"../../geometries/geom3":44,"./mayOverlap":267,"./trees":280}],267:[function(require,module,exports){
+},{"../../geometries/geom3":46,"./mayOverlap":269,"./trees":282}],269:[function(require,module,exports){
 const { EPS } = require('../../maths/constants')
 
 const measureBoundingBox = require('../../measurements/measureBoundingBox')
@@ -8052,7 +8395,7 @@ const mayOverlap = (geometry1, geometry2) => {
 
 module.exports = mayOverlap
 
-},{"../../maths/constants":95,"../../measurements/measureBoundingBox":258}],268:[function(require,module,exports){
+},{"../../maths/constants":97,"../../measurements/measureBoundingBox":260}],270:[function(require,module,exports){
 const { EPS } = require('../../maths/constants')
 
 const line2 = require('../../maths/line2')
@@ -8396,7 +8739,7 @@ const reTesselateCoplanarPolygons = (sourcepolygons) => {
 
 module.exports = reTesselateCoplanarPolygons
 
-},{"../../geometries/poly3":81,"../../maths/OrthoNormalBasis":94,"../../maths/constants":95,"../../maths/line2":106,"../../maths/utils/interpolateBetween2DPointsForY":171,"../../maths/vec2":191,"../../utils":384}],269:[function(require,module,exports){
+},{"../../geometries/poly3":83,"../../maths/OrthoNormalBasis":96,"../../maths/constants":97,"../../maths/line2":108,"../../maths/utils/interpolateBetween2DPointsForY":173,"../../maths/vec2":193,"../../utils":386}],271:[function(require,module,exports){
 const geom3 = require('../../geometries/geom3')
 const poly3 = require('../../geometries/poly3')
 
@@ -8461,7 +8804,7 @@ const retessellate = (geometry) => {
 
 module.exports = retessellate
 
-},{"../../geometries/geom3":44,"../../geometries/poly3":81,"./reTesselateCoplanarPolygons":268}],270:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../geometries/poly3":83,"./reTesselateCoplanarPolygons":270}],272:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 // const geom2 = require('../../geometries/geom2')
@@ -8506,7 +8849,7 @@ const scission = (...objects) => {
 
 module.exports = scission
 
-},{"../../geometries/geom3":44,"../../utils/flatten":382,"./scissionGeom3":271}],271:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../utils/flatten":384,"./scissionGeom3":273}],273:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 const measureEpsilon = require('../../measurements/measureEpsilon')
 
@@ -8601,7 +8944,7 @@ const scissionGeom3 = (geometry) => {
 
 module.exports = scissionGeom3
 
-},{"../../geometries/geom3":44,"../../maths/vec3":222,"../../measurements/measureEpsilon":259}],272:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../maths/vec3":224,"../../measurements/measureEpsilon":261}],274:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 const areAllShapesTheSameType = require('../../utils/areAllShapesTheSameType')
 
@@ -8650,7 +8993,7 @@ const subtract = (...geometries) => {
 
 module.exports = subtract
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../utils/areAllShapesTheSameType":380,"../../utils/flatten":382,"./subtractGeom2":273,"./subtractGeom3":274}],273:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../utils/areAllShapesTheSameType":382,"../../utils/flatten":384,"./subtractGeom2":275,"./subtractGeom3":276}],275:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom3 = require('../../geometries/geom3')
@@ -8679,7 +9022,7 @@ const subtract = (...geometries) => {
 
 module.exports = subtract
 
-},{"../../geometries/geom3":44,"../../measurements/measureEpsilon":259,"../../utils/flatten":382,"./fromFakePolygons":261,"./subtractGeom3":274,"./to3DWalls":276}],274:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../measurements/measureEpsilon":261,"../../utils/flatten":384,"./fromFakePolygons":263,"./subtractGeom3":276,"./to3DWalls":278}],276:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const retessellate = require('./retessellate')
@@ -8705,7 +9048,7 @@ const subtract = (...geometries) => {
 
 module.exports = subtract
 
-},{"../../utils/flatten":382,"./retessellate":269,"./subtractGeom3Sub":275}],275:[function(require,module,exports){
+},{"../../utils/flatten":384,"./retessellate":271,"./subtractGeom3Sub":277}],277:[function(require,module,exports){
 const geom3 = require('../../geometries/geom3')
 
 const mayOverlap = require('./mayOverlap')
@@ -8738,7 +9081,7 @@ const subtractGeom3Sub = (geometry1, geometry2) => {
 
 module.exports = subtractGeom3Sub
 
-},{"../../geometries/geom3":44,"./mayOverlap":267,"./trees":280}],276:[function(require,module,exports){
+},{"../../geometries/geom3":46,"./mayOverlap":269,"./trees":282}],278:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 
 const geom2 = require('../../geometries/geom2')
@@ -8776,7 +9119,7 @@ const to3DWalls = (options, geometry) => {
 
 module.exports = to3DWalls
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/poly3":81,"../../maths/vec3":222}],277:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/poly3":83,"../../maths/vec3":224}],279:[function(require,module,exports){
 const plane = require('../../../maths/plane')
 const poly3 = require('../../../geometries/poly3')
 
@@ -8919,7 +9262,7 @@ class Node {
 
 module.exports = Node
 
-},{"../../../geometries/poly3":81,"../../../maths/plane":163}],278:[function(require,module,exports){
+},{"../../../geometries/poly3":83,"../../../maths/plane":165}],280:[function(require,module,exports){
 const { EPS } = require('../../../maths/constants')
 
 const vec3 = require('../../../maths/vec3')
@@ -9184,7 +9527,7 @@ class PolygonTreeNode {
 
 module.exports = PolygonTreeNode
 
-},{"../../../geometries/poly3":81,"../../../maths/constants":95,"../../../maths/vec3":222,"./splitPolygonByPlane":282}],279:[function(require,module,exports){
+},{"../../../geometries/poly3":83,"../../../maths/constants":97,"../../../maths/vec3":224,"./splitPolygonByPlane":284}],281:[function(require,module,exports){
 const Node = require('./Node')
 const PolygonTreeNode = require('./PolygonTreeNode')
 
@@ -9237,12 +9580,12 @@ class Tree {
 
 module.exports = Tree
 
-},{"./Node":277,"./PolygonTreeNode":278}],280:[function(require,module,exports){
+},{"./Node":279,"./PolygonTreeNode":280}],282:[function(require,module,exports){
 module.exports = {
   Tree: require('./Tree')
 }
 
-},{"./Tree":279}],281:[function(require,module,exports){
+},{"./Tree":281}],283:[function(require,module,exports){
 const vec3 = require('../../../maths/vec3')
 
 const splitLineSegmentByPlane = (plane, p1, p2) => {
@@ -9259,7 +9602,7 @@ const splitLineSegmentByPlane = (plane, p1, p2) => {
 
 module.exports = splitLineSegmentByPlane
 
-},{"../../../maths/vec3":222}],282:[function(require,module,exports){
+},{"../../../maths/vec3":224}],284:[function(require,module,exports){
 const { EPS } = require('../../../maths/constants')
 
 const plane = require('../../../maths/plane')
@@ -9383,7 +9726,7 @@ const splitPolygonByPlane = (splane, polygon) => {
 
 module.exports = splitPolygonByPlane
 
-},{"../../../geometries/poly3":81,"../../../maths/constants":95,"../../../maths/plane":163,"../../../maths/vec3":222,"./splitLineSegmentByPlane":281}],283:[function(require,module,exports){
+},{"../../../geometries/poly3":83,"../../../maths/constants":97,"../../../maths/plane":165,"../../../maths/vec3":224,"./splitLineSegmentByPlane":283}],285:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 const areAllShapesTheSameType = require('../../utils/areAllShapesTheSameType')
 
@@ -9431,7 +9774,7 @@ const union = (...geometries) => {
 
 module.exports = union
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../utils/areAllShapesTheSameType":380,"../../utils/flatten":382,"./unionGeom2":284,"./unionGeom3":285}],284:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../utils/areAllShapesTheSameType":382,"../../utils/flatten":384,"./unionGeom2":286,"./unionGeom3":287}],286:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom3 = require('../../geometries/geom3')
@@ -9459,7 +9802,7 @@ const union = (...geometries) => {
 
 module.exports = union
 
-},{"../../geometries/geom3":44,"../../measurements/measureEpsilon":259,"../../utils/flatten":382,"./fromFakePolygons":261,"./to3DWalls":276,"./unionGeom3":285}],285:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../measurements/measureEpsilon":261,"../../utils/flatten":384,"./fromFakePolygons":263,"./to3DWalls":278,"./unionGeom3":287}],287:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const retessellate = require('./retessellate')
@@ -9485,7 +9828,7 @@ const union = (...geometries) => {
 
 module.exports = union
 
-},{"../../utils/flatten":382,"./retessellate":269,"./unionGeom3Sub":286}],286:[function(require,module,exports){
+},{"../../utils/flatten":384,"./retessellate":271,"./unionGeom3Sub":288}],288:[function(require,module,exports){
 const geom3 = require('../../geometries/geom3')
 
 const mayOverlap = require('./mayOverlap')
@@ -9527,7 +9870,7 @@ const unionForNonIntersecting = (geometry1, geometry2) => {
 
 module.exports = unionSub
 
-},{"../../geometries/geom3":44,"./mayOverlap":267,"./trees":280}],287:[function(require,module,exports){
+},{"../../geometries/geom3":46,"./mayOverlap":269,"./trees":282}],289:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom2 = require('../../geometries/geom2')
@@ -9569,7 +9912,7 @@ const expand = (options, ...objects) => {
 
 module.exports = expand
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../utils/flatten":382,"./expandGeom2":288,"./expandGeom3":289,"./expandPath2":290}],288:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../utils/flatten":384,"./expandGeom2":290,"./expandGeom3":291,"./expandPath2":292}],290:[function(require,module,exports){
 const geom2 = require('../../geometries/geom2')
 
 const offsetFromPoints = require('./offsetFromPoints')
@@ -9614,7 +9957,7 @@ const expandGeom2 = (options, geometry) => {
 
 module.exports = expandGeom2
 
-},{"../../geometries/geom2":30,"./offsetFromPoints":295}],289:[function(require,module,exports){
+},{"../../geometries/geom2":32,"./offsetFromPoints":297}],291:[function(require,module,exports){
 const geom3 = require('../../geometries/geom3')
 
 const union = require('../booleans/union')
@@ -9652,7 +9995,7 @@ const expandGeom3 = (options, geometry) => {
 
 module.exports = expandGeom3
 
-},{"../../geometries/geom3":44,"../booleans/union":283,"./expandShell":291}],290:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../booleans/union":285,"./expandShell":293}],292:[function(require,module,exports){
 const area = require('../../maths/utils/area')
 
 const vec2 = require('../../maths/vec2')
@@ -9753,7 +10096,7 @@ const expandPath2 = (options, geometry) => {
 
 module.exports = expandPath2
 
-},{"../../geometries/geom2":30,"../../geometries/path2":65,"../../maths/utils/area":168,"../../maths/vec2":191,"./offsetFromPoints":295}],291:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/path2":67,"../../maths/utils/area":170,"../../maths/vec2":193,"./offsetFromPoints":297}],293:[function(require,module,exports){
 const { EPS } = require('../../maths/constants')
 
 const mat4 = require('../../maths/mat4')
@@ -9972,7 +10315,7 @@ const expandShell = (options, geometry) => {
 
 module.exports = expandShell
 
-},{"../../geometries/geom3":44,"../../geometries/poly3":81,"../../maths/constants":95,"../../maths/mat4":145,"../../maths/vec3":222,"../../primitives/sphere":371,"../../utils/fnNumberSort":383,"../booleans/retessellate":269,"../booleans/unionGeom3Sub":286,"./extrudePolygon":292}],292:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../geometries/poly3":83,"../../maths/constants":97,"../../maths/mat4":147,"../../maths/vec3":224,"../../primitives/sphere":373,"../../utils/fnNumberSort":385,"../booleans/retessellate":271,"../booleans/unionGeom3Sub":288,"./extrudePolygon":294}],294:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec3 = require('../../maths/vec3')
 
@@ -10008,7 +10351,7 @@ const extrudePolygon = (offsetvector, polygon1) => {
 
 module.exports = extrudePolygon
 
-},{"../../geometries/geom3":44,"../../geometries/poly3":81,"../../maths/mat4":145,"../../maths/vec3":222}],293:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../geometries/poly3":83,"../../maths/mat4":147,"../../maths/vec3":224}],295:[function(require,module,exports){
 /**
  * All shapes (primitives or the results of operations) can be expanded (or contracted.)
  * In all cases, the function returns the results, and never changes the original shapes.
@@ -10021,7 +10364,7 @@ module.exports = {
   offset: require('./offset')
 }
 
-},{"./expand":287,"./offset":294}],294:[function(require,module,exports){
+},{"./expand":289,"./offset":296}],296:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom2 = require('../../geometries/geom2')
@@ -10058,7 +10401,7 @@ const offset = (options, ...objects) => {
 
 module.exports = offset
 
-},{"../../geometries/geom2":30,"../../geometries/path2":65,"../../utils/flatten":382,"./offsetGeom2":296,"./offsetPath2":297}],295:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/path2":67,"../../utils/flatten":384,"./offsetGeom2":298,"./offsetPath2":299}],297:[function(require,module,exports){
 const { EPS } = require('../../maths/constants')
 
 const intersect = require('../../maths/utils/intersect')
@@ -10225,7 +10568,7 @@ const offsetFromPoints = (options, points) => {
 
 module.exports = offsetFromPoints
 
-},{"../../maths/constants":95,"../../maths/line2":106,"../../maths/utils/area":168,"../../maths/utils/intersect":172,"../../maths/vec2":191}],296:[function(require,module,exports){
+},{"../../maths/constants":97,"../../maths/line2":108,"../../maths/utils/area":170,"../../maths/utils/intersect":174,"../../maths/vec2":193}],298:[function(require,module,exports){
 const geom2 = require('../../geometries/geom2')
 const poly2 = require('../../geometries/poly2')
 
@@ -10274,7 +10617,7 @@ const offsetGeom2 = (options, geometry) => {
 
 module.exports = offsetGeom2
 
-},{"../../geometries/geom2":30,"../../geometries/poly2":75,"./offsetFromPoints":295}],297:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/poly2":77,"./offsetFromPoints":297}],299:[function(require,module,exports){
 const path2 = require('../../geometries/path2')
 
 const offsetFromPoints = require('./offsetFromPoints')
@@ -10308,7 +10651,7 @@ const offsetPath2 = (options, geometry) => {
 
 module.exports = offsetPath2
 
-},{"../../geometries/path2":65,"./offsetFromPoints":295}],298:[function(require,module,exports){
+},{"../../geometries/path2":67,"./offsetFromPoints":297}],300:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 const geom2 = require('../../geometries/geom2')
@@ -10416,7 +10759,7 @@ const extrudeFromSlices = (options, base) => {
 
 module.exports = extrudeFromSlices
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/poly3":81,"../../maths/mat4":145,"./extrudeWalls":305,"./slice":314}],299:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/poly3":83,"../../maths/mat4":147,"./extrudeWalls":307,"./slice":316}],301:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom2 = require('../../geometries/geom2')
@@ -10460,7 +10803,7 @@ const extrudeLinear = (options, ...objects) => {
 
 module.exports = extrudeLinear
 
-},{"../../geometries/geom2":30,"../../utils/flatten":382,"./extrudeLinearGeom2":300}],300:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../utils/flatten":384,"./extrudeLinearGeom2":302}],302:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 const vec3 = require('../../maths/vec3')
 
@@ -10523,7 +10866,7 @@ const extrudeGeom2 = (options, geometry) => {
 
 module.exports = extrudeGeom2
 
-},{"../../geometries/geom2":30,"../../maths/mat4":145,"../../maths/vec3":222,"./extrudeFromSlices":298,"./slice":314}],301:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../maths/mat4":147,"../../maths/vec3":224,"./extrudeFromSlices":300,"./slice":316}],303:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom2 = require('../../geometries/geom2')
@@ -10569,7 +10912,7 @@ const extrudeRectangular = (options, ...objects) => {
 
 module.exports = extrudeRectangular
 
-},{"../../geometries/geom2":30,"../../geometries/path2":65,"../../utils/flatten":382,"./extrudeRectangularGeom2":302,"./extrudeRectangularPath2":303}],302:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/path2":67,"../../utils/flatten":384,"./extrudeRectangularGeom2":304,"./extrudeRectangularPath2":305}],304:[function(require,module,exports){
 const { area } = require('../../maths/utils')
 
 const geom2 = require('../../geometries/geom2')
@@ -10617,7 +10960,7 @@ const extrudeRectangularGeom2 = (options, geometry) => {
 
 module.exports = extrudeRectangularGeom2
 
-},{"../../geometries/geom2":30,"../../geometries/path2":65,"../../maths/utils":170,"../expansions/expand":287,"./extrudeLinearGeom2":300}],303:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/path2":67,"../../maths/utils":172,"../expansions/expand":289,"./extrudeLinearGeom2":302}],305:[function(require,module,exports){
 const path2 = require('../../geometries/path2')
 
 const expand = require('../expansions/expand')
@@ -10652,7 +10995,7 @@ const extrudeRectangularPath2 = (options, geometry) => {
 
 module.exports = extrudeRectangularPath2
 
-},{"../../geometries/path2":65,"../expansions/expand":287,"./extrudeLinearGeom2":300}],304:[function(require,module,exports){
+},{"../../geometries/path2":67,"../expansions/expand":289,"./extrudeLinearGeom2":302}],306:[function(require,module,exports){
 const mat4 = require('../../maths/mat4')
 
 const { mirrorX } = require('../transforms/mirror')
@@ -10784,7 +11127,7 @@ const extrudeRotate = (options, geometry) => {
 
 module.exports = extrudeRotate
 
-},{"../../geometries/geom2":30,"../../maths/mat4":145,"../transforms/mirror":348,"./extrudeFromSlices":298,"./slice":314}],305:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../maths/mat4":147,"../transforms/mirror":350,"./extrudeFromSlices":300,"./slice":316}],307:[function(require,module,exports){
 const { EPS } = require('../../maths/constants')
 const vec3 = require('../../maths/vec3')
 
@@ -10864,7 +11207,7 @@ const extrudeWalls = (slice0, slice1) => {
 
 module.exports = extrudeWalls
 
-},{"../../geometries/poly3":81,"../../maths/constants":95,"../../maths/vec3":222,"./slice":314}],306:[function(require,module,exports){
+},{"../../geometries/poly3":83,"../../maths/constants":97,"../../maths/vec3":224,"./slice":316}],308:[function(require,module,exports){
 /**
  * All 2D shapes (primitives or the results of operations) can be extruded in various ways.
  * In all cases, the function returns the results, and never changes the original shapes.
@@ -10881,7 +11224,7 @@ module.exports = {
   slice: require('./slice')
 }
 
-},{"./extrudeFromSlices":298,"./extrudeLinear":299,"./extrudeRectangular":301,"./extrudeRotate":304,"./project":307,"./slice":314}],307:[function(require,module,exports){
+},{"./extrudeFromSlices":300,"./extrudeLinear":301,"./extrudeRectangular":303,"./extrudeRotate":306,"./project":309,"./slice":316}],309:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const aboutEqualNormals = require('../../maths/utils/aboutEqualNormals')
@@ -10974,7 +11317,7 @@ const project = (options, ...objects) => {
 
 module.exports = project
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/poly3":81,"../../maths/mat4":145,"../../maths/plane":163,"../../maths/utils/aboutEqualNormals":167,"../../measurements/measureEpsilon":259,"../../utils/flatten":382,"../booleans/unionGeom2":284,"../booleans/unionGeom3":285}],308:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/poly3":83,"../../maths/mat4":147,"../../maths/plane":165,"../../maths/utils/aboutEqualNormals":169,"../../measurements/measureEpsilon":261,"../../utils/flatten":384,"../booleans/unionGeom2":286,"../booleans/unionGeom3":287}],310:[function(require,module,exports){
 const plane = require('../../../maths/plane')
 const vec3 = require('../../../maths/vec3')
 
@@ -11014,7 +11357,7 @@ const calculatePlane = (slice) => {
 
 module.exports = calculatePlane
 
-},{"../../../maths/plane":163,"../../../maths/vec3":222}],309:[function(require,module,exports){
+},{"../../../maths/plane":165,"../../../maths/vec3":224}],311:[function(require,module,exports){
 const create = require('./create')
 
 const vec3 = require('../../../maths/vec3')
@@ -11044,7 +11387,7 @@ const clone = (...params) => {
 
 module.exports = clone
 
-},{"../../../maths/vec3":222,"./create":310}],310:[function(require,module,exports){
+},{"../../../maths/vec3":224,"./create":312}],312:[function(require,module,exports){
 /**
  * Represents a 3D geometry consisting of a list of edges.
  * @typedef {Object} slice
@@ -11066,7 +11409,7 @@ const create = (edges) => {
 
 module.exports = create
 
-},{}],311:[function(require,module,exports){
+},{}],313:[function(require,module,exports){
 const vec3 = require('../../../maths/vec3')
 
 /**
@@ -11095,7 +11438,7 @@ const equals = (a, b) => {
 
 module.exports = equals
 
-},{"../../../maths/vec3":222}],312:[function(require,module,exports){
+},{"../../../maths/vec3":224}],314:[function(require,module,exports){
 const vec3 = require('../../../maths/vec3')
 
 const create = require('./create')
@@ -11132,7 +11475,7 @@ const fromPoints = (points) => {
 
 module.exports = fromPoints
 
-},{"../../../maths/vec3":222,"./create":310}],313:[function(require,module,exports){
+},{"../../../maths/vec3":224,"./create":312}],315:[function(require,module,exports){
 const vec3 = require('../../../maths/vec3')
 
 const create = require('./create')
@@ -11161,7 +11504,7 @@ const fromSides = (sides) => {
 
 module.exports = fromSides
 
-},{"../../../maths/vec3":222,"./create":310}],314:[function(require,module,exports){
+},{"../../../maths/vec3":224,"./create":312}],316:[function(require,module,exports){
 /**
  * @module modeling/extrusions/slice
  */
@@ -11180,7 +11523,7 @@ module.exports = {
   transform: require('./transform')
 }
 
-},{"./calculatePlane":308,"./clone":309,"./create":310,"./equals":311,"./fromPoints":312,"./fromSides":313,"./isA":315,"./reverse":316,"./toEdges":317,"./toPolygons":318,"./toString":319,"./transform":320}],315:[function(require,module,exports){
+},{"./calculatePlane":310,"./clone":311,"./create":312,"./equals":313,"./fromPoints":314,"./fromSides":315,"./isA":317,"./reverse":318,"./toEdges":319,"./toPolygons":320,"./toString":321,"./transform":322}],317:[function(require,module,exports){
 /**
  * Determin if the given object is a slice.
  * @param {slice} object - the object to interogate
@@ -11200,7 +11543,7 @@ const isA = (object) => {
 
 module.exports = isA
 
-},{}],316:[function(require,module,exports){
+},{}],318:[function(require,module,exports){
 const create = require('./create')
 
 /**
@@ -11228,7 +11571,7 @@ const reverse = (...params) => {
 
 module.exports = reverse
 
-},{"./create":310}],317:[function(require,module,exports){
+},{"./create":312}],319:[function(require,module,exports){
 /**
  * Produces an array of edges from the given slice.
  * The returned array should not be modified as the data is shared with the slice.
@@ -11243,7 +11586,7 @@ const toEdges = (slice) => slice.edges
 
 module.exports = toEdges
 
-},{}],318:[function(require,module,exports){
+},{}],320:[function(require,module,exports){
 const vec3 = require('../../../maths/vec3')
 
 const geom3 = require('../../../geometries/geom3')
@@ -11321,7 +11664,7 @@ const toPolygons = (slice) => {
 
 module.exports = toPolygons
 
-},{"../../../geometries/geom3":44,"../../../geometries/poly3":81,"../../../maths/vec3":222,"../../booleans/intersectGeom3Sub":266,"./calculatePlane":308}],319:[function(require,module,exports){
+},{"../../../geometries/geom3":46,"../../../geometries/poly3":83,"../../../maths/vec3":224,"../../booleans/intersectGeom3Sub":268,"./calculatePlane":310}],321:[function(require,module,exports){
 const vec3 = require('../../../maths/vec3')
 
 const edgesToString = (edges) =>
@@ -11338,7 +11681,7 @@ const toString = (slice) => `[${edgesToString(slice.edges)}]`
 
 module.exports = toString
 
-},{"../../../maths/vec3":222}],320:[function(require,module,exports){
+},{"../../../maths/vec3":224}],322:[function(require,module,exports){
 const vec3 = require('../../../maths/vec3')
 
 const create = require('./create')
@@ -11361,7 +11704,7 @@ const transform = (matrix, slice) => {
 
 module.exports = transform
 
-},{"../../../maths/vec3":222,"./create":310}],321:[function(require,module,exports){
+},{"../../../maths/vec3":224,"./create":312}],323:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 const areAllShapesTheSameType = require('../../utils/areAllShapesTheSameType')
 
@@ -11415,7 +11758,7 @@ const hull = (...geometries) => {
 
 module.exports = hull
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../utils/areAllShapesTheSameType":380,"../../utils/flatten":382,"./hullGeom2":323,"./hullGeom3":324,"./hullPath2":325}],322:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../utils/areAllShapesTheSameType":382,"../../utils/flatten":384,"./hullGeom2":325,"./hullGeom3":326,"./hullPath2":327}],324:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const union = require('../booleans/union')
@@ -11460,7 +11803,7 @@ const hullChain = (...geometries) => {
 
 module.exports = hullChain
 
-},{"../../utils/flatten":382,"../booleans/union":283,"./hull":321}],323:[function(require,module,exports){
+},{"../../utils/flatten":384,"../booleans/union":285,"./hull":323}],325:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom2 = require('../../geometries/geom2')
@@ -11502,7 +11845,7 @@ const hullGeom2 = (...geometries) => {
 
 module.exports = hullGeom2
 
-},{"../../geometries/geom2":30,"../../utils/flatten":382,"./hullPoints2":326}],324:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../utils/flatten":384,"./hullPoints2":328}],326:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom3 = require('../../geometries/geom3')
@@ -11549,7 +11892,7 @@ const hullGeom3 = (...geometries) => {
 
 module.exports = hullGeom3
 
-},{"../../geometries/geom3":44,"../../geometries/poly3":81,"../../utils/flatten":382,"./quickhull":334}],325:[function(require,module,exports){
+},{"../../geometries/geom3":46,"../../geometries/poly3":83,"../../utils/flatten":384,"./quickhull":336}],327:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const vec2 = require('../../maths/vec2')
@@ -11584,7 +11927,7 @@ const hullPath2 = (...geometries) => {
 
 module.exports = hullPath2
 
-},{"../../geometries/path2":65,"../../maths/vec2":191,"../../utils/flatten":382,"./hullPoints2":326}],326:[function(require,module,exports){
+},{"../../geometries/path2":67,"../../maths/vec2":193,"../../utils/flatten":384,"./hullPoints2":328}],328:[function(require,module,exports){
 const vec2 = require('../../maths/vec2')
 
 const angleBetweenPoints = (p0, p1) => Math.atan2((p1[1] - p0[1]), (p1[0] - p0[0]))
@@ -11693,7 +12036,7 @@ const hullPoints2 = (uniquepoints) => {
 
 module.exports = hullPoints2
 
-},{"../../maths/vec2":191}],327:[function(require,module,exports){
+},{"../../maths/vec2":193}],329:[function(require,module,exports){
 /**
  * All shapes (primitives or the results of operations) can be passed to hull functions
  * to determine the convex hull of all points.
@@ -11707,7 +12050,7 @@ module.exports = {
   hullChain: require('./hullChain')
 }
 
-},{"./hull":321,"./hullChain":322}],328:[function(require,module,exports){
+},{"./hull":323,"./hullChain":324}],330:[function(require,module,exports){
 const add = require('../../../maths/vec3/add')
 const copy = require('../../../maths/vec3/copy')
 const cross = require('../../../maths/vec3/cross')
@@ -12043,7 +12386,7 @@ module.exports = {
   Face
 }
 
-},{"../../../maths/vec3/add":209,"../../../maths/vec3/copy":212,"../../../maths/vec3/cross":214,"../../../maths/vec3/dot":217,"../../../maths/vec3/length":223,"../../../maths/vec3/normalize":229,"../../../maths/vec3/scale":234,"../../../maths/vec3/subtract":238,"./HalfEdge":329}],329:[function(require,module,exports){
+},{"../../../maths/vec3/add":211,"../../../maths/vec3/copy":214,"../../../maths/vec3/cross":216,"../../../maths/vec3/dot":219,"../../../maths/vec3/length":225,"../../../maths/vec3/normalize":231,"../../../maths/vec3/scale":236,"../../../maths/vec3/subtract":240,"./HalfEdge":331}],331:[function(require,module,exports){
 const distance = require('../../../maths/vec3/distance')
 const squaredDistance = require('../../../maths/vec3/squaredDistance')
 
@@ -12101,7 +12444,7 @@ class HalfEdge {
 
 module.exports = HalfEdge
 
-},{"../../../maths/vec3/distance":215,"../../../maths/vec3/squaredDistance":236}],330:[function(require,module,exports){
+},{"../../../maths/vec3/distance":217,"../../../maths/vec3/squaredDistance":238}],332:[function(require,module,exports){
 const dot = require('../../../maths/vec3/dot')
 
 const pointLineDistance = require('./point-line-distance')
@@ -12857,7 +13200,7 @@ class QuickHull {
 
 module.exports = QuickHull
 
-},{"../../../maths/vec3/dot":217,"./Face":328,"./Vertex":331,"./VertexList":332,"./get-plane-normal":333,"./point-line-distance":335}],331:[function(require,module,exports){
+},{"../../../maths/vec3/dot":219,"./Face":330,"./Vertex":333,"./VertexList":334,"./get-plane-normal":335,"./point-line-distance":337}],333:[function(require,module,exports){
 /*
  * Original source from quickhull3d (https://github.com/mauriciopoppe/quickhull3d)
  * Copyright (c) 2015 Mauricio Poppe
@@ -12880,7 +13223,7 @@ class Vertex {
 
 module.exports = Vertex
 
-},{}],332:[function(require,module,exports){
+},{}],334:[function(require,module,exports){
 /*
  * Original source from quickhull3d (https://github.com/mauriciopoppe/quickhull3d)
  * Copyright (c) 2015 Mauricio Poppe
@@ -13028,7 +13371,7 @@ class VertexList {
 
 module.exports = VertexList
 
-},{}],333:[function(require,module,exports){
+},{}],335:[function(require,module,exports){
 const cross = require('../../../maths/vec3/cross')
 const normalize = require('../../../maths/vec3/normalize')
 const subtract = require('../../../maths/vec3/subtract')
@@ -13050,7 +13393,7 @@ const planeNormal = (out, point1, point2, point3) => {
 
 module.exports = planeNormal
 
-},{"../../../maths/vec3/cross":214,"../../../maths/vec3/normalize":229,"../../../maths/vec3/subtract":238}],334:[function(require,module,exports){
+},{"../../../maths/vec3/cross":216,"../../../maths/vec3/normalize":231,"../../../maths/vec3/subtract":240}],336:[function(require,module,exports){
 const QuickHull = require('./QuickHull')
 
 /*
@@ -13068,7 +13411,7 @@ const runner = (points, options = {}) => {
 
 module.exports = runner
 
-},{"./QuickHull":330}],335:[function(require,module,exports){
+},{"./QuickHull":332}],337:[function(require,module,exports){
 const cross = require('../../../maths/vec3/cross')
 const subtract = require('../../../maths/vec3/subtract')
 const squaredLength = require('../../../maths/vec3/squaredLength')
@@ -13112,7 +13455,7 @@ const pointLineDistance = (point, a, b) => Math.sqrt(distanceSquared(point, a, b
 
 module.exports = pointLineDistance
 
-},{"../../../maths/vec3/cross":214,"../../../maths/vec3/squaredLength":237,"../../../maths/vec3/subtract":238}],336:[function(require,module,exports){
+},{"../../../maths/vec3/cross":216,"../../../maths/vec3/squaredLength":239,"../../../maths/vec3/subtract":240}],338:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 const line3 = require('../../maths/line3')
 
@@ -13311,7 +13654,7 @@ const polygonsToEdges = (polygons) => {
 
 module.exports = { polygonsToEdges, edgesToPolygons, cullOpenEdges, splitEdge, removePolygons, addPolygon }
 
-},{"../../geometries/poly3":81,"../../maths/line3":123,"../../maths/vec3":222}],337:[function(require,module,exports){
+},{"../../geometries/poly3":83,"../../maths/line3":125,"../../maths/vec3":224}],339:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const measureEpsilon = require('../../measurements/measureEpsilon')
@@ -13409,7 +13752,7 @@ const generalize = (options, ...geometries) => {
 
 module.exports = generalize
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../measurements/measureEpsilon":259,"../../utils/flatten":382,"./insertTjunctions":339,"./mergePolygons":340,"./repairTjunctions":341,"./snapPolygons":343,"./triangulatePolygons":344}],338:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../measurements/measureEpsilon":261,"../../utils/flatten":384,"./insertTjunctions":341,"./mergePolygons":342,"./repairTjunctions":343,"./snapPolygons":345,"./triangulatePolygons":346}],340:[function(require,module,exports){
 /**
  * All shapes (primitives or the results of operations) can be modified to correct issues, etc.
  * In all cases, these functions returns the results, and never changes the original geometry.
@@ -13422,7 +13765,7 @@ module.exports = {
   snap: require('./snap')
 }
 
-},{"./generalize":337,"./snap":342}],339:[function(require,module,exports){
+},{"./generalize":339,"./snap":344}],341:[function(require,module,exports){
 const constants = require('../../maths/constants')
 const vec3 = require('../../maths/vec3')
 const poly3 = require('../../geometries/poly3')
@@ -13719,7 +14062,7 @@ const insertTjunctions = (polygons) => {
 
 module.exports = insertTjunctions
 
-},{"../../geometries/poly3":81,"../../maths/constants":95,"../../maths/vec3":222}],340:[function(require,module,exports){
+},{"../../geometries/poly3":83,"../../maths/constants":97,"../../maths/vec3":224}],342:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 
 const poly3 = require('../../geometries/poly3')
@@ -13932,7 +14275,7 @@ const mergePolygons = (epsilon, polygons) => {
 
 module.exports = mergePolygons
 
-},{"../../geometries/poly3":81,"../../maths/vec3":222}],341:[function(require,module,exports){
+},{"../../geometries/poly3":83,"../../maths/vec3":224}],343:[function(require,module,exports){
 const { polygonsToEdges, edgesToPolygons, cullOpenEdges, splitEdge, removePolygons, addPolygon } = require('./edges')
 
 /*
@@ -13978,7 +14321,7 @@ const repairTjunctions = (epsilon, polygons) => {
 
 module.exports = repairTjunctions
 
-},{"./edges":336}],342:[function(require,module,exports){
+},{"./edges":338}],344:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const vec2 = require('../../maths/vec2')
@@ -14036,7 +14379,7 @@ const snap = (...geometries) => {
 
 module.exports = snap
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../maths/vec2":191,"../../measurements/measureEpsilon":259,"../../utils/flatten":382,"./snapPolygons":343}],343:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../maths/vec2":193,"../../measurements/measureEpsilon":261,"../../utils/flatten":384,"./snapPolygons":345}],345:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 
 const poly3 = require('../../geometries/poly3')
@@ -14070,7 +14413,7 @@ const snapPolygons = (epsilon, polygons) => {
 
 module.exports = snapPolygons
 
-},{"../../geometries/poly3":81,"../../maths/vec3":222}],344:[function(require,module,exports){
+},{"../../geometries/poly3":83,"../../maths/vec3":224}],346:[function(require,module,exports){
 const vec3 = require('../../maths/vec3')
 const poly3 = require('../../geometries/poly3')
 
@@ -14117,7 +14460,7 @@ const triangulatePolygons = (epsilon, polygons) => {
 
 module.exports = triangulatePolygons
 
-},{"../../geometries/poly3":81,"../../maths/vec3":222}],345:[function(require,module,exports){
+},{"../../geometries/poly3":83,"../../maths/vec3":224}],347:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 const padArrayToLength = require('../../utils/padArrayToLength')
 const measureAggregateBoundingBox = require('../../measurements/measureAggregateBoundingBox')
@@ -14208,7 +14551,7 @@ const align = (options, ...geometries) => {
 
 module.exports = align
 
-},{"../../measurements/measureAggregateBoundingBox":254,"../../utils/flatten":382,"../../utils/padArrayToLength":386,"./translate":352}],346:[function(require,module,exports){
+},{"../../measurements/measureAggregateBoundingBox":256,"../../utils/flatten":384,"../../utils/padArrayToLength":388,"./translate":354}],348:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom2 = require('../../geometries/geom2')
@@ -14300,7 +14643,7 @@ module.exports = {
   centerZ
 }
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../measurements/measureBoundingBox":258,"../../utils/flatten":382,"./translate":352}],347:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../measurements/measureBoundingBox":260,"../../utils/flatten":384,"./translate":354}],349:[function(require,module,exports){
 /**
  * All shapes (primitives or the results of operations) can be transformed, such as scaled or rotated.
  * In all cases, the function returns the results, and never changes the original shapes.
@@ -14339,7 +14682,7 @@ module.exports = {
   translateZ: require('./translate').translateZ
 }
 
-},{"./align":345,"./center":346,"./mirror":348,"./rotate":349,"./scale":350,"./transform":351,"./translate":352}],348:[function(require,module,exports){
+},{"./align":347,"./center":348,"./mirror":350,"./rotate":351,"./scale":352,"./transform":353,"./translate":354}],350:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const mat4 = require('../../maths/mat4')
@@ -14419,7 +14762,7 @@ module.exports = {
   mirrorZ
 }
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../maths/mat4":145,"../../maths/plane":163,"../../utils/flatten":382}],349:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../maths/mat4":147,"../../maths/plane":165,"../../utils/flatten":384}],351:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const mat4 = require('../../maths/mat4')
@@ -14497,7 +14840,7 @@ module.exports = {
   rotateZ
 }
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../maths/mat4":145,"../../utils/flatten":382}],350:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../maths/mat4":147,"../../utils/flatten":384}],352:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const mat4 = require('../../maths/mat4')
@@ -14573,7 +14916,7 @@ module.exports = {
   scaleZ
 }
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../maths/mat4":145,"../../utils/flatten":382}],351:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../maths/mat4":147,"../../utils/flatten":384}],353:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const geom2 = require('../../geometries/geom2')
@@ -14607,7 +14950,7 @@ const transform = (matrix, ...objects) => {
 
 module.exports = transform
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../utils/flatten":382}],352:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../utils/flatten":384}],354:[function(require,module,exports){
 const flatten = require('../../utils/flatten')
 
 const mat4 = require('../../maths/mat4')
@@ -14681,7 +15024,7 @@ module.exports = {
   translateZ
 }
 
-},{"../../geometries/geom2":30,"../../geometries/geom3":44,"../../geometries/path2":65,"../../maths/mat4":145,"../../utils/flatten":382}],353:[function(require,module,exports){
+},{"../../geometries/geom2":32,"../../geometries/geom3":46,"../../geometries/path2":67,"../../maths/mat4":147,"../../utils/flatten":384}],355:[function(require,module,exports){
 const { EPS } = require('../maths/constants')
 
 const vec2 = require('../maths/vec2')
@@ -14767,7 +15110,7 @@ const arc = (options) => {
 
 module.exports = arc
 
-},{"../geometries/path2":65,"../maths/constants":95,"../maths/vec2":191,"./commonChecks":355}],354:[function(require,module,exports){
+},{"../geometries/path2":67,"../maths/constants":97,"../maths/vec2":193,"./commonChecks":357}],356:[function(require,module,exports){
 const ellipse = require('./ellipse')
 
 const { isGT } = require('./commonChecks')
@@ -14805,7 +15148,7 @@ const circle = (options) => {
 
 module.exports = circle
 
-},{"./commonChecks":355,"./ellipse":360}],355:[function(require,module,exports){
+},{"./commonChecks":357,"./ellipse":362}],357:[function(require,module,exports){
 // verify that the array has the given dimension, and contains Number values
 const isNumberArray = (array, dimension) => {
   if (Array.isArray(array) && array.length >= dimension) {
@@ -14826,7 +15169,7 @@ module.exports = {
   isGTE
 }
 
-},{}],356:[function(require,module,exports){
+},{}],358:[function(require,module,exports){
 const cuboid = require('./cuboid')
 
 const { isGT } = require('./commonChecks')
@@ -14858,7 +15201,7 @@ const cube = (options) => {
 
 module.exports = cube
 
-},{"./commonChecks":355,"./cuboid":357}],357:[function(require,module,exports){
+},{"./commonChecks":357,"./cuboid":359}],359:[function(require,module,exports){
 const geom3 = require('../geometries/geom3')
 const poly3 = require('../geometries/poly3')
 
@@ -14912,7 +15255,7 @@ const cuboid = (options) => {
 
 module.exports = cuboid
 
-},{"../geometries/geom3":44,"../geometries/poly3":81,"./commonChecks":355}],358:[function(require,module,exports){
+},{"../geometries/geom3":46,"../geometries/poly3":83,"./commonChecks":357}],360:[function(require,module,exports){
 const cylinderElliptic = require('./cylinderElliptic')
 
 const { isGT } = require('./commonChecks')
@@ -14955,7 +15298,7 @@ const cylinder = (options) => {
 
 module.exports = cylinder
 
-},{"./commonChecks":355,"./cylinderElliptic":359}],359:[function(require,module,exports){
+},{"./commonChecks":357,"./cylinderElliptic":361}],361:[function(require,module,exports){
 const { EPS } = require('../maths/constants')
 
 const vec3 = require('../maths/vec3')
@@ -15080,7 +15423,7 @@ const cylinderElliptic = (options) => {
 
 module.exports = cylinderElliptic
 
-},{"../geometries/geom3":44,"../geometries/poly3":81,"../maths/constants":95,"../maths/vec3":222,"./commonChecks":355}],360:[function(require,module,exports){
+},{"../geometries/geom3":46,"../geometries/poly3":83,"../maths/constants":97,"../maths/vec3":224,"./commonChecks":357}],362:[function(require,module,exports){
 const { EPS } = require('../maths/constants')
 
 const vec2 = require('../maths/vec2')
@@ -15155,7 +15498,7 @@ const ellipse = (options) => {
 
 module.exports = ellipse
 
-},{"../geometries/geom2":30,"../maths/constants":95,"../maths/vec2":191,"./commonChecks":355}],361:[function(require,module,exports){
+},{"../geometries/geom2":32,"../maths/constants":97,"../maths/vec2":193,"./commonChecks":357}],363:[function(require,module,exports){
 const vec3 = require('../maths/vec3')
 
 const geom3 = require('../geometries/geom3')
@@ -15250,7 +15593,7 @@ const ellipsoid = (options) => {
 
 module.exports = ellipsoid
 
-},{"../geometries/geom3":44,"../geometries/poly3":81,"../maths/vec3":222,"./commonChecks":355}],362:[function(require,module,exports){
+},{"../geometries/geom3":46,"../geometries/poly3":83,"../maths/vec3":224,"./commonChecks":357}],364:[function(require,module,exports){
 const mat4 = require('../maths/mat4')
 
 const geom3 = require('../geometries/geom3')
@@ -15388,7 +15731,7 @@ const geodesicSphere = (options) => {
 
 module.exports = geodesicSphere
 
-},{"../geometries/geom3":44,"../maths/mat4":145,"./commonChecks":355,"./polyhedron":366}],363:[function(require,module,exports){
+},{"../geometries/geom3":46,"../maths/mat4":147,"./commonChecks":357,"./polyhedron":368}],365:[function(require,module,exports){
 /**
  * Primitives provide the building blocks for complex parts.
  * Each primitive is a geometrical object that can be described mathematically, and therefore precise.
@@ -15420,7 +15763,7 @@ module.exports = {
   torus: require('./torus')
 }
 
-},{"./arc":353,"./circle":354,"./cube":356,"./cuboid":357,"./cylinder":358,"./cylinderElliptic":359,"./ellipse":360,"./ellipsoid":361,"./geodesicSphere":362,"./line":364,"./polygon":365,"./polyhedron":366,"./rectangle":367,"./roundedCuboid":368,"./roundedCylinder":369,"./roundedRectangle":370,"./sphere":371,"./square":372,"./star":373,"./torus":374}],364:[function(require,module,exports){
+},{"./arc":355,"./circle":356,"./cube":358,"./cuboid":359,"./cylinder":360,"./cylinderElliptic":361,"./ellipse":362,"./ellipsoid":363,"./geodesicSphere":364,"./line":366,"./polygon":367,"./polyhedron":368,"./rectangle":369,"./roundedCuboid":370,"./roundedCylinder":371,"./roundedRectangle":372,"./sphere":373,"./square":374,"./star":375,"./torus":376}],366:[function(require,module,exports){
 const path2 = require('../geometries/path2')
 
 /**
@@ -15441,7 +15784,7 @@ const line = (points) => {
 
 module.exports = line
 
-},{"../geometries/path2":65}],365:[function(require,module,exports){
+},{"../geometries/path2":67}],367:[function(require,module,exports){
 const geom2 = require('../geometries/geom2')
 
 /**
@@ -15513,7 +15856,7 @@ const polygon = (options) => {
 
 module.exports = polygon
 
-},{"../geometries/geom2":30}],366:[function(require,module,exports){
+},{"../geometries/geom2":32}],368:[function(require,module,exports){
 const geom3 = require('../geometries/geom3')
 const poly3 = require('../geometries/poly3')
 
@@ -15586,7 +15929,7 @@ const polyhedron = (options) => {
 
 module.exports = polyhedron
 
-},{"../geometries/geom3":44,"../geometries/poly3":81,"./commonChecks":355}],367:[function(require,module,exports){
+},{"../geometries/geom3":46,"../geometries/poly3":83,"./commonChecks":357}],369:[function(require,module,exports){
 const vec2 = require('../maths/vec2')
 
 const geom2 = require('../geometries/geom2')
@@ -15629,7 +15972,7 @@ const rectangle = (options) => {
 
 module.exports = rectangle
 
-},{"../geometries/geom2":30,"../maths/vec2":191,"./commonChecks":355}],368:[function(require,module,exports){
+},{"../geometries/geom2":32,"../maths/vec2":193,"./commonChecks":357}],370:[function(require,module,exports){
 const { EPS } = require('../maths/constants')
 
 const vec2 = require('../maths/vec2')
@@ -15815,7 +16158,7 @@ const roundedCuboid = (options) => {
 
 module.exports = roundedCuboid
 
-},{"../geometries/geom3":44,"../geometries/poly3":81,"../maths/constants":95,"../maths/vec2":191,"../maths/vec3":222,"./commonChecks":355}],369:[function(require,module,exports){
+},{"../geometries/geom3":46,"../geometries/poly3":83,"../maths/constants":97,"../maths/vec2":193,"../maths/vec3":224,"./commonChecks":357}],371:[function(require,module,exports){
 const { EPS } = require('../maths/constants')
 
 const vec3 = require('../maths/vec3')
@@ -15955,7 +16298,7 @@ const roundedCylinder = (options) => {
 
 module.exports = roundedCylinder
 
-},{"../geometries/geom3":44,"../geometries/poly3":81,"../maths/constants":95,"../maths/vec3":222,"./commonChecks":355}],370:[function(require,module,exports){
+},{"../geometries/geom3":46,"../geometries/poly3":83,"../maths/constants":97,"../maths/vec3":224,"./commonChecks":357}],372:[function(require,module,exports){
 const { EPS } = require('../maths/constants')
 
 const vec2 = require('../maths/vec2')
@@ -16026,7 +16369,7 @@ const roundedRectangle = (options) => {
 
 module.exports = roundedRectangle
 
-},{"../geometries/geom2":30,"../maths/constants":95,"../maths/vec2":191,"./commonChecks":355}],371:[function(require,module,exports){
+},{"../geometries/geom2":32,"../maths/constants":97,"../maths/vec2":193,"./commonChecks":357}],373:[function(require,module,exports){
 const ellipsoid = require('./ellipsoid')
 
 const { isGT } = require('./commonChecks')
@@ -16063,7 +16406,7 @@ const sphere = (options) => {
 
 module.exports = sphere
 
-},{"./commonChecks":355,"./ellipsoid":361}],372:[function(require,module,exports){
+},{"./commonChecks":357,"./ellipsoid":363}],374:[function(require,module,exports){
 const rectangle = require('./rectangle')
 
 const { isGT } = require('./commonChecks')
@@ -16096,7 +16439,7 @@ const square = (options) => {
 
 module.exports = square
 
-},{"./commonChecks":355,"./rectangle":367}],373:[function(require,module,exports){
+},{"./commonChecks":357,"./rectangle":369}],375:[function(require,module,exports){
 const vec2 = require('../maths/vec2')
 
 const geom2 = require('../geometries/geom2')
@@ -16185,7 +16528,7 @@ const star = (options) => {
 
 module.exports = star
 
-},{"../geometries/geom2":30,"../maths/vec2":191,"./commonChecks":355}],374:[function(require,module,exports){
+},{"../geometries/geom2":32,"../maths/vec2":193,"./commonChecks":357}],376:[function(require,module,exports){
 const extrudeRotate = require('../operations/extrusions/extrudeRotate')
 const { rotate } = require('../operations/transforms/rotate')
 const { translate } = require('../operations/transforms/translate')
@@ -16249,7 +16592,7 @@ const torus = (options) => {
 
 module.exports = torus
 
-},{"../operations/extrusions/extrudeRotate":304,"../operations/transforms/rotate":349,"../operations/transforms/translate":352,"./circle":354,"./commonChecks":355}],375:[function(require,module,exports){
+},{"../operations/extrusions/extrudeRotate":306,"../operations/transforms/rotate":351,"../operations/transforms/translate":354,"./circle":356,"./commonChecks":357}],377:[function(require,module,exports){
 // -- data source from from http://paulbourke.net/dataformats/hershey/
 // -- reduced to save some bytes...
 // { [ascii code]: [width, x, y, ...] } - undefined value as path separator
@@ -16352,7 +16695,7 @@ module.exports = {
   126: [24, 3, 6, 3, 8, 4, 11, 6, 12, 8, 12, 10, 11, 14, 8, 16, 7, 18, 7, 20, 8, 21, 10, undefined, 3, 8, 4, 10, 6, 11, 8, 11, 10, 10, 14, 7, 16, 6, 18, 6, 20, 7, 21, 10, 21, 12]
 }
 
-},{}],376:[function(require,module,exports){
+},{}],378:[function(require,module,exports){
 /**
  * Texts provide sets of segments for each character or text strings.
  * The segments can be used to create outlines for both 2D and 3D geometry.
@@ -16366,7 +16709,7 @@ module.exports = {
   vectorText: require('./vectorText')
 }
 
-},{"./vectorChar":377,"./vectorText":379}],377:[function(require,module,exports){
+},{"./vectorChar":379,"./vectorText":381}],379:[function(require,module,exports){
 const vectorParams = require('./vectorParams')
 
 /**
@@ -16431,7 +16774,7 @@ const vectorChar = (options, char) => {
 
 module.exports = vectorChar
 
-},{"./vectorParams":378}],378:[function(require,module,exports){
+},{"./vectorParams":380}],380:[function(require,module,exports){
 const defaultFont = require('./fonts/single-line/hershey/simplex.js')
 
 const defaultsVectorParams = {
@@ -16459,7 +16802,7 @@ const vectorParams = (options, input) => {
 
 module.exports = vectorParams
 
-},{"./fonts/single-line/hershey/simplex.js":375}],379:[function(require,module,exports){
+},{"./fonts/single-line/hershey/simplex.js":377}],381:[function(require,module,exports){
 const vectorChar = require('./vectorChar')
 const vectorParams = require('./vectorParams')
 
@@ -16556,7 +16899,7 @@ const vectorText = (options, text) => {
 
 module.exports = vectorText
 
-},{"./vectorChar":377,"./vectorParams":378}],380:[function(require,module,exports){
+},{"./vectorChar":379,"./vectorParams":380}],382:[function(require,module,exports){
 // list of supported geometries
 const geom2 = require('../geometries/geom2')
 const geom3 = require('../geometries/geom3')
@@ -16583,7 +16926,7 @@ const areAllShapesTheSameType = (shapes) => {
 
 module.exports = areAllShapesTheSameType
 
-},{"../geometries/geom2":30,"../geometries/geom3":44,"../geometries/path2":65}],381:[function(require,module,exports){
+},{"../geometries/geom2":32,"../geometries/geom3":46,"../geometries/path2":67}],383:[function(require,module,exports){
 /**
  * Convert the given angle (degrees) to radians.
  * @param {Number} degrees - angle in degrees
@@ -16594,7 +16937,7 @@ const degToRad = (degrees) => degrees * 0.017453292519943295
 
 module.exports = degToRad
 
-},{}],382:[function(require,module,exports){
+},{}],384:[function(require,module,exports){
 /**
  * Flatten the given list of arguments into a single flat array.
  * The arguments can be composed of multiple depths of objects and arrays.
@@ -16606,7 +16949,7 @@ const flatten = (arr) => arr.reduce((acc, val) => Array.isArray(val) ? acc.conca
 
 module.exports = flatten
 
-},{}],383:[function(require,module,exports){
+},{}],385:[function(require,module,exports){
 /**
  * @alias module:modeling/utils.fnNumberSort
  */
@@ -16614,7 +16957,7 @@ const fnNumberSort = (a, b) => a - b
 
 module.exports = fnNumberSort
 
-},{}],384:[function(require,module,exports){
+},{}],386:[function(require,module,exports){
 /**
  * Utility functions of various sorts.
  * @module modeling/utils
@@ -16631,7 +16974,7 @@ module.exports = {
   radToDeg: require('./radToDeg')
 }
 
-},{"./areAllShapesTheSameType":380,"./degToRad":381,"./flatten":382,"./fnNumberSort":383,"./insertSorted":385,"./radToDeg":387,"./radiusToSegments":388}],385:[function(require,module,exports){
+},{"./areAllShapesTheSameType":382,"./degToRad":383,"./flatten":384,"./fnNumberSort":385,"./insertSorted":387,"./radToDeg":389,"./radiusToSegments":390}],387:[function(require,module,exports){
 /**
  * @alias module:modeling/utils.insertSorted
  */
@@ -16653,7 +16996,7 @@ const insertSorted = (array, element, comparefunc) => {
 
 module.exports = insertSorted
 
-},{}],386:[function(require,module,exports){
+},{}],388:[function(require,module,exports){
 /**
  * Build an array of at minimum a specified length from an existing array and a padding value. IF the array is already larger than the target length, it will not be shortened.
  * @param {Array} anArray - the source array to copy into the result.
@@ -16672,7 +17015,7 @@ const padArrayToLength = (anArray, padding, targetLength) => {
 
 module.exports = padArrayToLength
 
-},{}],387:[function(require,module,exports){
+},{}],389:[function(require,module,exports){
 /**
  * Convert the given angle (radians) to degrees.
  * @param {Number} radians - angle in radians
@@ -16683,7 +17026,7 @@ const radToDeg = (radians) => radians * 57.29577951308232
 
 module.exports = radToDeg
 
-},{}],388:[function(require,module,exports){
+},{}],390:[function(require,module,exports){
 /**
  * Calculate the number of segments from the given radius based on minimum length or angle.
  * @param {Number} radius - radius of the requested shape
@@ -16701,7 +17044,7 @@ const radiusToSegments = (radius, minimumLength, minimumAngle) => {
 
 module.exports = radiusToSegments
 
-},{}],389:[function(require,module,exports){
+},{}],391:[function(require,module,exports){
 (function(ja,N){"object"===typeof exports&&"undefined"!==typeof module?module.exports=N():"function"===typeof define&&define.amd?define(N):ja.createREGL=N()})(this,function(){function ja(a,b){this.id=Bb++;this.type=a;this.data=b}function N(a){if(0===a.length)return[];var b=a.charAt(0),c=a.charAt(a.length-1);if(1<a.length&&b===c&&('"'===b||"'"===b))return['"'+a.substr(1,a.length-2).replace(/\\/g,"\\\\").replace(/"/g,'\\"')+'"'];if(b=/\[(false|true|null|\d+|'[^']*'|"[^"]*")\]/.exec(a))return N(a.substr(0,
 b.index)).concat(N(b[1])).concat(N(a.substr(b.index+b[0].length)));b=a.split(".");if(1===b.length)return['"'+a.replace(/\\/g,"\\\\").replace(/"/g,'\\"')+'"'];a=[];for(c=0;c<b.length;++c)a=a.concat(N(b[c]));return a}function bb(a){return"["+N(a).join("][")+"]"}function Cb(){var a={"":0},b=[""];return{id:function(c){var e=a[c];if(e)return e;e=a[c]=b.length;b.push(c);return e},str:function(a){return b[a]}}}function Db(a,b,c){function e(){var b=window.innerWidth,e=window.innerHeight;a!==document.body&&
 (e=a.getBoundingClientRect(),b=e.right-e.left,e=e.bottom-e.top);g.width=c*b;g.height=c*e;H(g.style,{width:b+"px",height:e+"px"})}var g=document.createElement("canvas");H(g.style,{border:0,margin:0,padding:0,top:0,left:0});a.appendChild(g);a===document.body&&(g.style.position="absolute",H(a.style,{margin:0,padding:0}));var d;a!==document.body&&"function"===typeof ResizeObserver?(d=new ResizeObserver(function(){setTimeout(e)}),d.observe(a)):window.addEventListener("resize",e,!1);e();return{canvas:g,
@@ -16864,7 +17207,7 @@ a)if(a.framebuffer&&"framebufferCube"===a.framebuffer_reglType)for(var b=0;6>b;+
 b){var c;switch(a){case "frame":return u(b);case "lost":c=V;break;case "restore":c=X;break;case "destroy":c=Y}c.push(b);return{cancel:function(){for(var a=0;a<c.length;++a)if(c[a]===b){c[a]=c[c.length-1];c.pop();break}}}},limits:G,hasExtension:function(a){return 0<=G.extensions.indexOf(a.toLowerCase())},read:p,destroy:function(){B.length=0;e();K&&(K.removeEventListener("webglcontextlost",g),K.removeEventListener("webglcontextrestored",d));D.clear();T.clear();N.clear();x.clear();P.clear();R.clear();
 J.clear();w&&w.clear();Y.forEach(function(a){a()})},_gl:k,_refresh:m,poll:function(){t();w&&w.update()},now:z,stats:l});a.onDone(null,h);return h}});
 
-},{}],390:[function(require,module,exports){
+},{}],392:[function(require,module,exports){
 // modified version of https://github.com/thibauts/vertices-bounding-box that also works with non nested positions
 const boundingBox = (positions) => {
   if (positions.length === 0) {
@@ -16904,7 +17247,7 @@ const boundingBox = (positions) => {
 }
 module.exports = boundingBox
 
-},{}],391:[function(require,module,exports){
+},{}],393:[function(require,module,exports){
 const vec3 = require('gl-vec3')
 
 const { flatten } = require('@jscad/array-utils')
@@ -16960,7 +17303,7 @@ const computeBounds = (...geometries) => {
 
 module.exports = computeBounds
 
-},{"./boundingBox":390,"@jscad/array-utils":4,"gl-vec3":475}],392:[function(require,module,exports){
+},{"./boundingBox":392,"@jscad/array-utils":6,"gl-vec3":549}],394:[function(require,module,exports){
 const vec3 = require('gl-vec3')
 const mat4 = require('gl-mat4')
 
@@ -17042,7 +17385,7 @@ module.exports = {
   fromPerspectiveToOrthographic
 }
 
-},{"./orthographicCamera":393,"./perspectiveCamera":394,"gl-mat4":442,"gl-vec3":475}],393:[function(require,module,exports){
+},{"./orthographicCamera":395,"./perspectiveCamera":396,"gl-mat4":516,"gl-vec3":549}],395:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 
 const cameraState = {
@@ -17083,7 +17426,7 @@ const setProjection = (camera, input) => {
 
 module.exports = { cameraState, cameraProps, setProjection }
 
-},{"gl-mat4":442}],394:[function(require,module,exports){
+},{"gl-mat4":516}],396:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 const vec3 = require('gl-vec3')
 
@@ -17144,7 +17487,7 @@ const update = (output, camera) => {
 
 module.exports = { cameraState, cameraProps, defaults, setProjection, update }
 
-},{"gl-mat4":442,"gl-vec3":475}],395:[function(require,module,exports){
+},{"gl-mat4":516,"gl-vec3":549}],397:[function(require,module,exports){
 const vec3 = require('gl-vec3')
 const mat4 = require('gl-mat4')
 const { max, min, sqrt, PI, sin, cos, atan2 } = Math
@@ -17515,7 +17858,7 @@ module.exports = {
   reset
 }
 
-},{"../bound-utils/computeBounds":391,"../cameras/orthographicCamera":393,"camera-unproject":419,"gl-mat4":442,"gl-vec3":475}],396:[function(require,module,exports){
+},{"../bound-utils/computeBounds":393,"../cameras/orthographicCamera":395,"camera-unproject":494,"gl-mat4":516,"gl-vec3":549}],398:[function(require,module,exports){
 const { flatten, toArray } = require('@jscad/array-utils')
 
 const { meshColor } = require('../rendering/renderDefaults')
@@ -17584,7 +17927,7 @@ const entitiesFromSolids = (options, ...solids) => {
 
 module.exports = entitiesFromSolids
 
-},{"../rendering/renderDefaults":412,"./geom2ToGeometries":397,"./geom3ToGeometries":398,"./path2ToGeometries":399,"@jscad/array-utils":4}],397:[function(require,module,exports){
+},{"../rendering/renderDefaults":414,"./geom2ToGeometries":399,"./geom3ToGeometries":400,"./path2ToGeometries":401,"@jscad/array-utils":6}],399:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 
 const maxIndex = Math.floor(65535 / 2) // two vertices per segment
@@ -17632,7 +17975,7 @@ const geom2ToGeometries = (options, solid) => {
 
 module.exports = geom2ToGeometries
 
-},{"gl-mat4":442}],398:[function(require,module,exports){
+},{"gl-mat4":516}],400:[function(require,module,exports){
 const vec3 = require('gl-vec3')
 const mat4 = require('gl-mat4')
 
@@ -17854,7 +18197,7 @@ const fuzyNormalAndPositionLookup = (normalPositionLookup, toCompare, normalThre
 
 module.exports = geom3ToGeometries
 
-},{"gl-mat4":442,"gl-vec3":475}],399:[function(require,module,exports){
+},{"gl-mat4":516,"gl-vec3":549}],401:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 
 // The only data types accepted by WebGL (and OpenGL ES 2.0) for indices are unsigned bytes and unsigned shorts.
@@ -17914,7 +18257,7 @@ const path2ToGeometries = (options, solid) => {
 
 module.exports = path2ToGeometries
 
-},{"gl-mat4":442}],400:[function(require,module,exports){
+},{"gl-mat4":516}],402:[function(require,module,exports){
 module.exports = {
   prepareRender: require('./rendering/render'),
   drawCommands: {
@@ -17936,7 +18279,7 @@ module.exports = {
 
 }
 
-},{"./cameras/camera":392,"./cameras/orthographicCamera":393,"./cameras/perspectiveCamera":394,"./controls/orbitControls":395,"./geometry-utils-V2/entitiesFromSolids":396,"./rendering/commands/drawAxis":401,"./rendering/commands/drawGrid/multi.js":403,"./rendering/commands/drawLines":405,"./rendering/commands/drawMesh":407,"./rendering/render":410}],401:[function(require,module,exports){
+},{"./cameras/camera":394,"./cameras/orthographicCamera":395,"./cameras/perspectiveCamera":396,"./controls/orbitControls":397,"./geometry-utils-V2/entitiesFromSolids":398,"./rendering/commands/drawAxis":403,"./rendering/commands/drawGrid/multi.js":405,"./rendering/commands/drawLines":407,"./rendering/commands/drawMesh":409,"./rendering/render":412}],403:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 
 const drawAxis = (regl, params) => {
@@ -18007,7 +18350,7 @@ const drawAxis = (regl, params) => {
 
 module.exports = drawAxis
 
-},{"gl-mat4":442}],402:[function(require,module,exports){
+},{"gl-mat4":516}],404:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 
 const makeDrawGrid = (regl, params = {}) => {
@@ -18151,7 +18494,7 @@ const makeDrawGrid = (regl, params = {}) => {
 
 module.exports = makeDrawGrid
 
-},{"gl-mat4":442}],403:[function(require,module,exports){
+},{"gl-mat4":516}],405:[function(require,module,exports){
 const makeDrawMultiGrid = (regl, params) => {
   const defaults = {
     size: [50, 50],
@@ -18169,7 +18512,7 @@ const makeDrawMultiGrid = (regl, params) => {
 
 module.exports = makeDrawMultiGrid
 
-},{"./index":402}],404:[function(require,module,exports){
+},{"./index":404}],406:[function(require,module,exports){
 const vColorFrag = `
 precision mediump float;
 uniform vec4 ucolor;
@@ -18180,7 +18523,7 @@ void main () {
 `
 module.exports = { frag: vColorFrag }
 
-},{}],405:[function(require,module,exports){
+},{}],407:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 
 const { meshColor } = require('../../renderDefaults')
@@ -18226,7 +18569,7 @@ const drawLines = (regl, params = {}) => {
 
 module.exports = drawLines
 
-},{"../../renderDefaults":412,"./colorOnlyShaders":404,"./meshShaders":406,"gl-mat4":442}],406:[function(require,module,exports){
+},{"../../renderDefaults":414,"./colorOnlyShaders":406,"./meshShaders":408,"gl-mat4":516}],408:[function(require,module,exports){
 const meshFrag = `
 precision mediump float;
 varying vec3 surfaceNormal;
@@ -18282,7 +18625,7 @@ void main() {
 
 module.exports = { vert: meshVert, frag: meshFrag }
 
-},{}],407:[function(require,module,exports){
+},{}],409:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 
 const { meshColor } = require('../../renderDefaults')
@@ -18377,9 +18720,9 @@ const drawMesh = (regl, params = { extras: {} }) => {
 
 module.exports = drawMesh
 
-},{"../../renderDefaults":412,"./meshShaders":408,"./vColorShaders":409,"gl-mat4":442}],408:[function(require,module,exports){
-arguments[4][406][0].apply(exports,arguments)
-},{"dup":406}],409:[function(require,module,exports){
+},{"../../renderDefaults":414,"./meshShaders":410,"./vColorShaders":411,"gl-mat4":516}],410:[function(require,module,exports){
+arguments[4][408][0].apply(exports,arguments)
+},{"dup":408}],411:[function(require,module,exports){
 const vColorVert = `
 precision mediump float;
 
@@ -18470,7 +18813,7 @@ void main () {
 
 module.exports = { frag: vColorFrag, vert: vColorVert }
 
-},{}],410:[function(require,module,exports){
+},{}],412:[function(require,module,exports){
 const renderContext = require('./renderContext')
 const renderDefaults = require('./renderDefaults')
 
@@ -18554,7 +18897,7 @@ const prepareRender = (params) => {
 
 module.exports = prepareRender
 
-},{"./renderContext":411,"./renderDefaults":412,"regl":389}],411:[function(require,module,exports){
+},{"./renderContext":413,"./renderDefaults":414,"regl":391}],413:[function(require,module,exports){
 const mat4 = require('gl-mat4')
 
 /** function that injects most of the uniforms into the regl context:
@@ -18604,7 +18947,7 @@ const renderWrapper = (regl, params = {}) => {
 
 module.exports = renderWrapper
 
-},{"gl-mat4":442}],412:[function(require,module,exports){
+},{"gl-mat4":516}],414:[function(require,module,exports){
 module.exports = {
   background: [1, 1, 1, 1],
   meshColor: [0, 0.6, 1, 1], // default face color or line color
@@ -18617,2008 +18960,6429 @@ module.exports = {
   materialShininess: 8.0
 }
 
-},{}],413:[function(require,module,exports){
-'use strict'
-
-exports.byteLength = byteLength
-exports.toByteArray = toByteArray
-exports.fromByteArray = fromByteArray
-
-var lookup = []
-var revLookup = []
-var Arr = typeof Uint8Array !== 'undefined' ? Uint8Array : Array
-
-var code = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-for (var i = 0, len = code.length; i < len; ++i) {
-  lookup[i] = code[i]
-  revLookup[code.charCodeAt(i)] = i
-}
-
-// Support decoding URL-safe base64 strings, as Node.js does.
-// See: https://en.wikipedia.org/wiki/Base64#URL_applications
-revLookup['-'.charCodeAt(0)] = 62
-revLookup['_'.charCodeAt(0)] = 63
-
-function getLens (b64) {
-  var len = b64.length
-
-  if (len % 4 > 0) {
-    throw new Error('Invalid string. Length must be a multiple of 4')
-  }
-
-  // Trim off extra bytes after placeholder bytes are found
-  // See: https://github.com/beatgammit/base64-js/issues/42
-  var validLen = b64.indexOf('=')
-  if (validLen === -1) validLen = len
-
-  var placeHoldersLen = validLen === len
-    ? 0
-    : 4 - (validLen % 4)
-
-  return [validLen, placeHoldersLen]
-}
-
-// base64 is 4/3 + up to two characters of the original data
-function byteLength (b64) {
-  var lens = getLens(b64)
-  var validLen = lens[0]
-  var placeHoldersLen = lens[1]
-  return ((validLen + placeHoldersLen) * 3 / 4) - placeHoldersLen
-}
-
-function _byteLength (b64, validLen, placeHoldersLen) {
-  return ((validLen + placeHoldersLen) * 3 / 4) - placeHoldersLen
-}
-
-function toByteArray (b64) {
-  var tmp
-  var lens = getLens(b64)
-  var validLen = lens[0]
-  var placeHoldersLen = lens[1]
-
-  var arr = new Arr(_byteLength(b64, validLen, placeHoldersLen))
-
-  var curByte = 0
-
-  // if there are placeholders, only get up to the last complete 4 chars
-  var len = placeHoldersLen > 0
-    ? validLen - 4
-    : validLen
-
-  var i
-  for (i = 0; i < len; i += 4) {
-    tmp =
-      (revLookup[b64.charCodeAt(i)] << 18) |
-      (revLookup[b64.charCodeAt(i + 1)] << 12) |
-      (revLookup[b64.charCodeAt(i + 2)] << 6) |
-      revLookup[b64.charCodeAt(i + 3)]
-    arr[curByte++] = (tmp >> 16) & 0xFF
-    arr[curByte++] = (tmp >> 8) & 0xFF
-    arr[curByte++] = tmp & 0xFF
-  }
-
-  if (placeHoldersLen === 2) {
-    tmp =
-      (revLookup[b64.charCodeAt(i)] << 2) |
-      (revLookup[b64.charCodeAt(i + 1)] >> 4)
-    arr[curByte++] = tmp & 0xFF
-  }
-
-  if (placeHoldersLen === 1) {
-    tmp =
-      (revLookup[b64.charCodeAt(i)] << 10) |
-      (revLookup[b64.charCodeAt(i + 1)] << 4) |
-      (revLookup[b64.charCodeAt(i + 2)] >> 2)
-    arr[curByte++] = (tmp >> 8) & 0xFF
-    arr[curByte++] = tmp & 0xFF
-  }
-
-  return arr
-}
-
-function tripletToBase64 (num) {
-  return lookup[num >> 18 & 0x3F] +
-    lookup[num >> 12 & 0x3F] +
-    lookup[num >> 6 & 0x3F] +
-    lookup[num & 0x3F]
-}
-
-function encodeChunk (uint8, start, end) {
-  var tmp
-  var output = []
-  for (var i = start; i < end; i += 3) {
-    tmp =
-      ((uint8[i] << 16) & 0xFF0000) +
-      ((uint8[i + 1] << 8) & 0xFF00) +
-      (uint8[i + 2] & 0xFF)
-    output.push(tripletToBase64(tmp))
-  }
-  return output.join('')
-}
-
-function fromByteArray (uint8) {
-  var tmp
-  var len = uint8.length
-  var extraBytes = len % 3 // if we have 1 byte left, pad 2 bytes
-  var parts = []
-  var maxChunkLength = 16383 // must be multiple of 3
-
-  // go through the array every three bytes, we'll deal with trailing stuff later
-  for (var i = 0, len2 = len - extraBytes; i < len2; i += maxChunkLength) {
-    parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)))
-  }
-
-  // pad the end with zeros, but make sure to not forget the extra bytes
-  if (extraBytes === 1) {
-    tmp = uint8[len - 1]
-    parts.push(
-      lookup[tmp >> 2] +
-      lookup[(tmp << 4) & 0x3F] +
-      '=='
-    )
-  } else if (extraBytes === 2) {
-    tmp = (uint8[len - 2] << 8) + uint8[len - 1]
-    parts.push(
-      lookup[tmp >> 10] +
-      lookup[(tmp >> 4) & 0x3F] +
-      lookup[(tmp << 2) & 0x3F] +
-      '='
-    )
-  }
-
-  return parts.join('')
-}
-
-},{}],414:[function(require,module,exports){
-
 },{}],415:[function(require,module,exports){
-(function (Buffer){(function (){
-/*!
- * The buffer module from node.js, for the browser.
- *
- * @author   Feross Aboukhadijeh <https://feross.org>
- * @license  MIT
- */
-/* eslint-disable no-proto */
+"use strict";
 
-'use strict'
-
-var base64 = require('base64-js')
-var ieee754 = require('ieee754')
-
-exports.Buffer = Buffer
-exports.SlowBuffer = SlowBuffer
-exports.INSPECT_MAX_BYTES = 50
-
-var K_MAX_LENGTH = 0x7fffffff
-exports.kMaxLength = K_MAX_LENGTH
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = LinkedList;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
 
 /**
- * If `Buffer.TYPED_ARRAY_SUPPORT`:
- *   === true    Use Uint8Array implementation (fastest)
- *   === false   Print warning and recommend using `buffer` v4.x which has an Object
- *               implementation (most compatible, even IE6)
- *
- * Browsers that support typed arrays are IE 10+, Firefox 4+, Chrome 7+, Safari 5.1+,
- * Opera 11.6+, iOS 4.2+.
- *
- * We report that the browser does not support typed arrays if the are not subclassable
- * using __proto__. Firefox 4-29 lacks support for adding new properties to `Uint8Array`
- * (See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438). IE 10 lacks support
- * for __proto__ and has a buggy typed array implementation.
+ * Doubly linked list
+ * @constructor
  */
-Buffer.TYPED_ARRAY_SUPPORT = typedArraySupport()
-
-if (!Buffer.TYPED_ARRAY_SUPPORT && typeof console !== 'undefined' &&
-    typeof console.error === 'function') {
-  console.error(
-    'This browser lacks typed array (Uint8Array) support which is required by ' +
-    '`buffer` v5.x. Use `buffer` v4.x if you require old browser support.'
-  )
-}
-
-function typedArraySupport () {
-  // Can typed array instances can be augmented?
-  try {
-    var arr = new Uint8Array(1)
-    arr.__proto__ = { __proto__: Uint8Array.prototype, foo: function () { return 42 } }
-    return arr.foo() === 42
-  } catch (e) {
-    return false
-  }
-}
-
-Object.defineProperty(Buffer.prototype, 'parent', {
-  enumerable: true,
-  get: function () {
-    if (!Buffer.isBuffer(this)) return undefined
-    return this.buffer
-  }
-})
-
-Object.defineProperty(Buffer.prototype, 'offset', {
-  enumerable: true,
-  get: function () {
-    if (!Buffer.isBuffer(this)) return undefined
-    return this.byteOffset
-  }
-})
-
-function createBuffer (length) {
-  if (length > K_MAX_LENGTH) {
-    throw new RangeError('The value "' + length + '" is invalid for option "size"')
-  }
-  // Return an augmented `Uint8Array` instance
-  var buf = new Uint8Array(length)
-  buf.__proto__ = Buffer.prototype
-  return buf
+function LinkedList() {
+  this.head = null;
+  this.length = 0;
 }
 
 /**
- * The Buffer constructor returns instances of `Uint8Array` that have their
- * prototype changed to `Buffer.prototype`. Furthermore, `Buffer` is a subclass of
- * `Uint8Array`, so the returned instances will have all the node `Buffer` methods
- * and the `Uint8Array` methods. Square bracket notation works as expected -- it
- * returns a single octet.
- *
- * The `Uint8Array` prototype remains unmodified.
+ * Add a node to the end of the list
+ * @param {{prev:Object|null, next:Object|null, dispose:function}} x node to add
  */
+LinkedList.prototype.add = function (x) {
+  if (this.head !== null) {
+    this.head.prev = x;
+    x.next = this.head;
+  }
+  this.head = x;
+  ++this.length;
+};
 
-function Buffer (arg, encodingOrOffset, length) {
-  // Common case.
-  if (typeof arg === 'number') {
-    if (typeof encodingOrOffset === 'string') {
-      throw new TypeError(
-        'The "string" argument must be of type string. Received type number'
-      )
+/**
+ * Remove the provided node from the list
+ * @param {{prev:Object|null, next:Object|null, dispose:function}} x node to remove
+ */
+LinkedList.prototype.remove = function (x) {
+  // eslint-disable-line  complexity
+  --this.length;
+  if (x === this.head) {
+    this.head = this.head.next;
+  }
+  if (x.next !== null) {
+    x.next.prev = x.prev;
+    x.next = null;
+  }
+  if (x.prev !== null) {
+    x.prev.next = x.next;
+    x.prev = null;
+  }
+};
+
+/**
+ * @returns {boolean} true iff there are no nodes in the list
+ */
+LinkedList.prototype.isEmpty = function () {
+  return this.length === 0;
+};
+
+/**
+ * Dispose all nodes
+ * @returns {Promise} promise that fulfills when all nodes have been disposed,
+ *  or rejects if an error occurs while disposing
+ */
+LinkedList.prototype.dispose = function () {
+  if (this.isEmpty()) {
+    return Promise.resolve();
+  }
+
+  var promises = [];
+  var x = this.head;
+  this.head = null;
+  this.length = 0;
+
+  while (x !== null) {
+    promises.push(x.dispose());
+    x = x.next;
+  }
+
+  return Promise.all(promises);
+};
+},{}],416:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.isPromise = isPromise;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function isPromise(p) {
+  return p !== null && typeof p === 'object' && typeof p.then === 'function';
+}
+},{}],417:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = Queue;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+// Based on https://github.com/petkaantonov/deque
+
+function Queue(capPow2) {
+  this._capacity = capPow2 || 32;
+  this._length = 0;
+  this._head = 0;
+}
+
+Queue.prototype.push = function (x) {
+  var len = this._length;
+  this._checkCapacity(len + 1);
+
+  var i = this._head + len & this._capacity - 1;
+  this[i] = x;
+  this._length = len + 1;
+};
+
+Queue.prototype.shift = function () {
+  var head = this._head;
+  var x = this[head];
+
+  this[head] = void 0;
+  this._head = head + 1 & this._capacity - 1;
+  this._length--;
+  return x;
+};
+
+Queue.prototype.isEmpty = function () {
+  return this._length === 0;
+};
+
+Queue.prototype.length = function () {
+  return this._length;
+};
+
+Queue.prototype._checkCapacity = function (size) {
+  if (this._capacity < size) {
+    this._ensureCapacity(this._capacity << 1);
+  }
+};
+
+Queue.prototype._ensureCapacity = function (capacity) {
+  var oldCapacity = this._capacity;
+  this._capacity = capacity;
+
+  var last = this._head + this._length;
+
+  if (last > oldCapacity) {
+    copy(this, 0, this, oldCapacity, last & oldCapacity - 1);
+  }
+};
+
+function copy(src, srcIndex, dst, dstIndex, len) {
+  for (var j = 0; j < len; ++j) {
+    dst[j + dstIndex] = src[j + srcIndex];
+    src[j + srcIndex] = void 0;
+  }
+}
+},{}],418:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = Stream;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function Stream(source) {
+  this.source = source;
+}
+
+Stream.prototype.run = function (sink, scheduler) {
+  return this.source.run(sink, scheduler);
+};
+},{}],419:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.scan = scan;
+exports.reduce = reduce;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _runSource = require('../runSource');
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _PropagateTask = require('../scheduler/PropagateTask');
+
+var _PropagateTask2 = _interopRequireDefault(_PropagateTask);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Create a stream containing successive reduce results of applying f to
+ * the previous reduce result and the current stream item.
+ * @param {function(result:*, x:*):*} f reducer function
+ * @param {*} initial initial value
+ * @param {Stream} stream stream to scan
+ * @returns {Stream} new stream containing successive reduce results
+ */
+function scan(f, initial, stream) {
+  return new _Stream2.default(new Scan(f, initial, stream.source));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function Scan(f, z, source) {
+  this.source = source;
+  this.f = f;
+  this.value = z;
+}
+
+Scan.prototype.run = function (sink, scheduler) {
+  var d1 = scheduler.asap(_PropagateTask2.default.event(this.value, sink));
+  var d2 = this.source.run(new ScanSink(this.f, this.value, sink), scheduler);
+  return dispose.all([d1, d2]);
+};
+
+function ScanSink(f, z, sink) {
+  this.f = f;
+  this.value = z;
+  this.sink = sink;
+}
+
+ScanSink.prototype.event = function (t, x) {
+  var f = this.f;
+  this.value = f(this.value, x);
+  this.sink.event(t, this.value);
+};
+
+ScanSink.prototype.error = _Pipe2.default.prototype.error;
+ScanSink.prototype.end = _Pipe2.default.prototype.end;
+
+/**
+* Reduce a stream to produce a single result.  Note that reducing an infinite
+* stream will return a Promise that never fulfills, but that may reject if an error
+* occurs.
+* @param {function(result:*, x:*):*} f reducer function
+* @param {*} initial initial value
+* @param {Stream} stream to reduce
+* @returns {Promise} promise for the file result of the reduce
+*/
+function reduce(f, initial, stream) {
+  return (0, _runSource.withDefaultScheduler)(new Reduce(f, initial, stream.source));
+}
+
+function Reduce(f, z, source) {
+  this.source = source;
+  this.f = f;
+  this.value = z;
+}
+
+Reduce.prototype.run = function (sink, scheduler) {
+  return this.source.run(new ReduceSink(this.f, this.value, sink), scheduler);
+};
+
+function ReduceSink(f, z, sink) {
+  this.f = f;
+  this.value = z;
+  this.sink = sink;
+}
+
+ReduceSink.prototype.event = function (t, x) {
+  var f = this.f;
+  this.value = f(this.value, x);
+  this.sink.event(t, this.value);
+};
+
+ReduceSink.prototype.error = _Pipe2.default.prototype.error;
+
+ReduceSink.prototype.end = function (t) {
+  this.sink.end(t, this.value);
+};
+},{"../Stream":418,"../disposable/dispose":446,"../runSource":457,"../scheduler/PropagateTask":459,"../sink/Pipe":466}],420:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.ap = ap;
+
+var _combine = require('./combine');
+
+var _prelude = require('@most/prelude');
+
+/**
+ * Assume fs is a stream containing functions, and apply the latest function
+ * in fs to the latest value in xs.
+ * fs:         --f---------g--------h------>
+ * xs:         -a-------b-------c-------d-->
+ * ap(fs, xs): --fa-----fb-gb---gc--hc--hd->
+ * @param {Stream} fs stream of functions to apply to the latest x
+ * @param {Stream} xs stream of values to which to apply all the latest f
+ * @returns {Stream} stream containing all the applications of fs to xs
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function ap(fs, xs) {
+  return (0, _combine.combine)(_prelude.apply, fs, xs);
+}
+},{"./combine":422,"@most/prelude":490}],421:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.cons = cons;
+exports.concat = concat;
+
+var _core = require('../source/core');
+
+var _continueWith = require('./continueWith');
+
+/**
+ * @param {*} x value to prepend
+ * @param {Stream} stream
+ * @returns {Stream} new stream with x prepended
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function cons(x, stream) {
+  return concat((0, _core.of)(x), stream);
+}
+
+/**
+* @param {Stream} left
+* @param {Stream} right
+* @returns {Stream} new stream containing all events in left followed by all
+*  events in right.  This *timeshifts* right to the end of left.
+*/
+function concat(left, right) {
+  return (0, _continueWith.continueWith)(function () {
+    return right;
+  }, left);
+}
+},{"../source/core":470,"./continueWith":424}],422:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.combine = combine;
+exports.combineArray = combineArray;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _transform = require('./transform');
+
+var transform = _interopRequireWildcard(_transform);
+
+var _core = require('../source/core');
+
+var core = _interopRequireWildcard(_core);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _IndexSink = require('../sink/IndexSink');
+
+var _IndexSink2 = _interopRequireDefault(_IndexSink);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+var _invoke = require('../invoke');
+
+var _invoke2 = _interopRequireDefault(_invoke);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+var map = base.map;
+var tail = base.tail;
+
+/**
+ * Combine latest events from all input streams
+ * @param {function(...events):*} f function to combine most recent events
+ * @returns {Stream} stream containing the result of applying f to the most recent
+ *  event of each input stream, whenever a new event arrives on any stream.
+ */
+function combine(f /*, ...streams */) {
+  return combineArray(f, tail(arguments));
+}
+
+/**
+* Combine latest events from all input streams
+* @param {function(...events):*} f function to combine most recent events
+* @param {[Stream]} streams most recent events
+* @returns {Stream} stream containing the result of applying f to the most recent
+*  event of each input stream, whenever a new event arrives on any stream.
+*/
+function combineArray(f, streams) {
+  var l = streams.length;
+  return l === 0 ? core.empty() : l === 1 ? transform.map(f, streams[0]) : new _Stream2.default(combineSources(f, streams));
+}
+
+function combineSources(f, streams) {
+  return new Combine(f, map(getSource, streams));
+}
+
+function getSource(stream) {
+  return stream.source;
+}
+
+function Combine(f, sources) {
+  this.f = f;
+  this.sources = sources;
+}
+
+Combine.prototype.run = function (sink, scheduler) {
+  var this$1 = this;
+
+  var l = this.sources.length;
+  var disposables = new Array(l);
+  var sinks = new Array(l);
+
+  var mergeSink = new CombineSink(disposables, sinks, sink, this.f);
+
+  for (var indexSink, i = 0; i < l; ++i) {
+    indexSink = sinks[i] = new _IndexSink2.default(i, mergeSink);
+    disposables[i] = this$1.sources[i].run(indexSink, scheduler);
+  }
+
+  return dispose.all(disposables);
+};
+
+function CombineSink(disposables, sinks, sink, f) {
+  var this$1 = this;
+
+  this.sink = sink;
+  this.disposables = disposables;
+  this.sinks = sinks;
+  this.f = f;
+
+  var l = sinks.length;
+  this.awaiting = l;
+  this.values = new Array(l);
+  this.hasValue = new Array(l);
+  for (var i = 0; i < l; ++i) {
+    this$1.hasValue[i] = false;
+  }
+
+  this.activeCount = sinks.length;
+}
+
+CombineSink.prototype.error = _Pipe2.default.prototype.error;
+
+CombineSink.prototype.event = function (t, indexedValue) {
+  var i = indexedValue.index;
+  var awaiting = this._updateReady(i);
+
+  this.values[i] = indexedValue.value;
+  if (awaiting === 0) {
+    this.sink.event(t, (0, _invoke2.default)(this.f, this.values));
+  }
+};
+
+CombineSink.prototype._updateReady = function (index) {
+  if (this.awaiting > 0) {
+    if (!this.hasValue[index]) {
+      this.hasValue[index] = true;
+      this.awaiting -= 1;
     }
-    return allocUnsafe(arg)
   }
-  return from(arg, encodingOrOffset, length)
+  return this.awaiting;
+};
+
+CombineSink.prototype.end = function (t, indexedValue) {
+  dispose.tryDispose(t, this.disposables[indexedValue.index], this.sink);
+  if (--this.activeCount === 0) {
+    this.sink.end(t, indexedValue.value);
+  }
+};
+},{"../Stream":418,"../disposable/dispose":446,"../invoke":452,"../sink/IndexSink":465,"../sink/Pipe":466,"../source/core":470,"./transform":442,"@most/prelude":490}],423:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.concatMap = concatMap;
+
+var _mergeConcurrently = require('./mergeConcurrently');
+
+/**
+ * Map each value in stream to a new stream, and concatenate them all
+ * stream:              -a---b---cX
+ * f(a):                 1-1-1-1X
+ * f(b):                        -2-2-2-2X
+ * f(c):                                -3-3-3-3X
+ * stream.concatMap(f): -1-1-1-1-2-2-2-2-3-3-3-3X
+ * @param {function(x:*):Stream} f function to map each value to a stream
+ * @param {Stream} stream
+ * @returns {Stream} new stream containing all events from each stream returned by f
+ */
+function concatMap(f, stream) {
+  return (0, _mergeConcurrently.mergeMapConcurrently)(f, 1, stream);
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+},{"./mergeConcurrently":432}],424:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.continueWith = continueWith;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function continueWith(f, stream) {
+  return new _Stream2.default(new ContinueWith(f, stream.source));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function ContinueWith(f, source) {
+  this.f = f;
+  this.source = source;
 }
 
-// Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97
-if (typeof Symbol !== 'undefined' && Symbol.species != null &&
-    Buffer[Symbol.species] === Buffer) {
-  Object.defineProperty(Buffer, Symbol.species, {
-    value: null,
-    configurable: true,
-    enumerable: false,
-    writable: false
+ContinueWith.prototype.run = function (sink, scheduler) {
+  return new ContinueWithSink(this.f, this.source, sink, scheduler);
+};
+
+function ContinueWithSink(f, source, sink, scheduler) {
+  this.f = f;
+  this.sink = sink;
+  this.scheduler = scheduler;
+  this.active = true;
+  this.disposable = dispose.once(source.run(this, scheduler));
+}
+
+ContinueWithSink.prototype.error = _Pipe2.default.prototype.error;
+
+ContinueWithSink.prototype.event = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+  this.sink.event(t, x);
+};
+
+ContinueWithSink.prototype.end = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+
+  dispose.tryDispose(t, this.disposable, this.sink);
+  this._startNext(t, x, this.sink);
+};
+
+ContinueWithSink.prototype._startNext = function (t, x, sink) {
+  try {
+    this.disposable = this._continue(this.f, x, sink);
+  } catch (e) {
+    sink.error(t, e);
+  }
+};
+
+ContinueWithSink.prototype._continue = function (f, x, sink) {
+  return f(x).source.run(sink, this.scheduler);
+};
+
+ContinueWithSink.prototype.dispose = function () {
+  this.active = false;
+  return this.disposable.dispose();
+};
+},{"../Stream":418,"../disposable/dispose":446,"../sink/Pipe":466}],425:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.delay = delay;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _PropagateTask = require('../scheduler/PropagateTask');
+
+var _PropagateTask2 = _interopRequireDefault(_PropagateTask);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * @param {Number} delayTime milliseconds to delay each item
+ * @param {Stream} stream
+ * @returns {Stream} new stream containing the same items, but delayed by ms
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function delay(delayTime, stream) {
+  return delayTime <= 0 ? stream : new _Stream2.default(new Delay(delayTime, stream.source));
+}
+
+function Delay(dt, source) {
+  this.dt = dt;
+  this.source = source;
+}
+
+Delay.prototype.run = function (sink, scheduler) {
+  var delaySink = new DelaySink(this.dt, sink, scheduler);
+  return dispose.all([delaySink, this.source.run(delaySink, scheduler)]);
+};
+
+function DelaySink(dt, sink, scheduler) {
+  this.dt = dt;
+  this.sink = sink;
+  this.scheduler = scheduler;
+}
+
+DelaySink.prototype.dispose = function () {
+  var self = this;
+  this.scheduler.cancelAll(function (scheduledTask) {
+    return scheduledTask.task.sink === self.sink;
+  });
+};
+
+DelaySink.prototype.event = function (t, x) {
+  this.scheduler.delay(this.dt, _PropagateTask2.default.event(x, this.sink));
+};
+
+DelaySink.prototype.end = function (t, x) {
+  this.scheduler.delay(this.dt, _PropagateTask2.default.end(x, this.sink));
+};
+
+DelaySink.prototype.error = _Pipe2.default.prototype.error;
+},{"../Stream":418,"../disposable/dispose":446,"../scheduler/PropagateTask":459,"../sink/Pipe":466}],426:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.flatMapError = undefined;
+exports.recoverWith = recoverWith;
+exports.throwError = throwError;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _SafeSink = require('../sink/SafeSink');
+
+var _SafeSink2 = _interopRequireDefault(_SafeSink);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _tryEvent = require('../source/tryEvent');
+
+var tryEvent = _interopRequireWildcard(_tryEvent);
+
+var _PropagateTask = require('../scheduler/PropagateTask');
+
+var _PropagateTask2 = _interopRequireDefault(_PropagateTask);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * If stream encounters an error, recover and continue with items from stream
+ * returned by f.
+ * @param {function(error:*):Stream} f function which returns a new stream
+ * @param {Stream} stream
+ * @returns {Stream} new stream which will recover from an error by calling f
+ */
+function recoverWith(f, stream) {
+  return new _Stream2.default(new RecoverWith(f, stream.source));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+var flatMapError = exports.flatMapError = recoverWith;
+
+/**
+ * Create a stream containing only an error
+ * @param {*} e error value, preferably an Error or Error subtype
+ * @returns {Stream} new stream containing only an error
+ */
+function throwError(e) {
+  return new _Stream2.default(new ErrorSource(e));
+}
+
+function ErrorSource(e) {
+  this.value = e;
+}
+
+ErrorSource.prototype.run = function (sink, scheduler) {
+  return scheduler.asap(new _PropagateTask2.default(runError, this.value, sink));
+};
+
+function runError(t, e, sink) {
+  sink.error(t, e);
+}
+
+function RecoverWith(f, source) {
+  this.f = f;
+  this.source = source;
+}
+
+RecoverWith.prototype.run = function (sink, scheduler) {
+  return new RecoverWithSink(this.f, this.source, sink, scheduler);
+};
+
+function RecoverWithSink(f, source, sink, scheduler) {
+  this.f = f;
+  this.sink = new _SafeSink2.default(sink);
+  this.scheduler = scheduler;
+  this.disposable = source.run(this, scheduler);
+}
+
+RecoverWithSink.prototype.event = function (t, x) {
+  tryEvent.tryEvent(t, x, this.sink);
+};
+
+RecoverWithSink.prototype.end = function (t, x) {
+  tryEvent.tryEnd(t, x, this.sink);
+};
+
+RecoverWithSink.prototype.error = function (t, e) {
+  var nextSink = this.sink.disable();
+
+  dispose.tryDispose(t, this.disposable, this.sink);
+  this._startNext(t, e, nextSink);
+};
+
+RecoverWithSink.prototype._startNext = function (t, x, sink) {
+  try {
+    this.disposable = this._continue(this.f, x, sink);
+  } catch (e) {
+    sink.error(t, e);
+  }
+};
+
+RecoverWithSink.prototype._continue = function (f, x, sink) {
+  var stream = f(x);
+  return stream.source.run(sink, this.scheduler);
+};
+
+RecoverWithSink.prototype.dispose = function () {
+  return this.disposable.dispose();
+};
+},{"../Stream":418,"../disposable/dispose":446,"../scheduler/PropagateTask":459,"../sink/SafeSink":467,"../source/tryEvent":478}],427:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.filter = filter;
+exports.skipRepeats = skipRepeats;
+exports.skipRepeatsWith = skipRepeatsWith;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _Filter = require('../fusion/Filter');
+
+var _Filter2 = _interopRequireDefault(_Filter);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Retain only items matching a predicate
+ * @param {function(x:*):boolean} p filtering predicate called for each item
+ * @param {Stream} stream stream to filter
+ * @returns {Stream} stream containing only items for which predicate returns truthy
+ */
+function filter(p, stream) {
+  return new _Stream2.default(_Filter2.default.create(p, stream.source));
+}
+
+/**
+ * Skip repeated events, using === to detect duplicates
+ * @param {Stream} stream stream from which to omit repeated events
+ * @returns {Stream} stream without repeated events
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function skipRepeats(stream) {
+  return skipRepeatsWith(same, stream);
+}
+
+/**
+ * Skip repeated events using the provided equals function to detect duplicates
+ * @param {function(a:*, b:*):boolean} equals optional function to compare items
+ * @param {Stream} stream stream from which to omit repeated events
+ * @returns {Stream} stream without repeated events
+ */
+function skipRepeatsWith(equals, stream) {
+  return new _Stream2.default(new SkipRepeats(equals, stream.source));
+}
+
+function SkipRepeats(equals, source) {
+  this.equals = equals;
+  this.source = source;
+}
+
+SkipRepeats.prototype.run = function (sink, scheduler) {
+  return this.source.run(new SkipRepeatsSink(this.equals, sink), scheduler);
+};
+
+function SkipRepeatsSink(equals, sink) {
+  this.equals = equals;
+  this.sink = sink;
+  this.value = void 0;
+  this.init = true;
+}
+
+SkipRepeatsSink.prototype.end = _Pipe2.default.prototype.end;
+SkipRepeatsSink.prototype.error = _Pipe2.default.prototype.error;
+
+SkipRepeatsSink.prototype.event = function (t, x) {
+  if (this.init) {
+    this.init = false;
+    this.value = x;
+    this.sink.event(t, x);
+  } else if (!this.equals(this.value, x)) {
+    this.value = x;
+    this.sink.event(t, x);
+  }
+};
+
+function same(a, b) {
+  return a === b;
+}
+},{"../Stream":418,"../fusion/Filter":448,"../sink/Pipe":466}],428:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.flatMap = flatMap;
+exports.join = join;
+
+var _mergeConcurrently = require('./mergeConcurrently');
+
+/**
+ * Map each value in the stream to a new stream, and merge it into the
+ * returned outer stream. Event arrival times are preserved.
+ * @param {function(x:*):Stream} f chaining function, must return a Stream
+ * @param {Stream} stream
+ * @returns {Stream} new stream containing all events from each stream returned by f
+ */
+function flatMap(f, stream) {
+  return (0, _mergeConcurrently.mergeMapConcurrently)(f, Infinity, stream);
+}
+
+/**
+ * Monadic join. Flatten a Stream<Stream<X>> to Stream<X> by merging inner
+ * streams to the outer. Event arrival times are preserved.
+ * @param {Stream<Stream<X>>} stream stream of streams
+ * @returns {Stream<X>} new stream containing all events of all inner streams
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function join(stream) {
+  return (0, _mergeConcurrently.mergeConcurrently)(Infinity, stream);
+}
+},{"./mergeConcurrently":432}],429:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.throttle = throttle;
+exports.debounce = debounce;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _Map = require('../fusion/Map');
+
+var _Map2 = _interopRequireDefault(_Map);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Limit the rate of events by suppressing events that occur too often
+ * @param {Number} period time to suppress events
+ * @param {Stream} stream
+ * @returns {Stream}
+ */
+function throttle(period, stream) {
+  return new _Stream2.default(throttleSource(period, stream.source));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function throttleSource(period, source) {
+  return source instanceof _Map2.default ? commuteMapThrottle(period, source) : source instanceof Throttle ? fuseThrottle(period, source) : new Throttle(period, source);
+}
+
+function commuteMapThrottle(period, source) {
+  return _Map2.default.create(source.f, throttleSource(period, source.source));
+}
+
+function fuseThrottle(period, source) {
+  return new Throttle(Math.max(period, source.period), source.source);
+}
+
+function Throttle(period, source) {
+  this.period = period;
+  this.source = source;
+}
+
+Throttle.prototype.run = function (sink, scheduler) {
+  return this.source.run(new ThrottleSink(this.period, sink), scheduler);
+};
+
+function ThrottleSink(period, sink) {
+  this.time = 0;
+  this.period = period;
+  this.sink = sink;
+}
+
+ThrottleSink.prototype.event = function (t, x) {
+  if (t >= this.time) {
+    this.time = t + this.period;
+    this.sink.event(t, x);
+  }
+};
+
+ThrottleSink.prototype.end = _Pipe2.default.prototype.end;
+
+ThrottleSink.prototype.error = _Pipe2.default.prototype.error;
+
+/**
+ * Wait for a burst of events to subside and emit only the last event in the burst
+ * @param {Number} period events occuring more frequently than this
+ *  will be suppressed
+ * @param {Stream} stream stream to debounce
+ * @returns {Stream} new debounced stream
+ */
+function debounce(period, stream) {
+  return new _Stream2.default(new Debounce(period, stream.source));
+}
+
+function Debounce(dt, source) {
+  this.dt = dt;
+  this.source = source;
+}
+
+Debounce.prototype.run = function (sink, scheduler) {
+  return new DebounceSink(this.dt, this.source, sink, scheduler);
+};
+
+function DebounceSink(dt, source, sink, scheduler) {
+  this.dt = dt;
+  this.sink = sink;
+  this.scheduler = scheduler;
+  this.value = void 0;
+  this.timer = null;
+  this.disposable = source.run(this, scheduler);
+}
+
+DebounceSink.prototype.event = function (t, x) {
+  this._clearTimer();
+  this.value = x;
+  this.timer = this.scheduler.delay(this.dt, new DebounceTask(this, x));
+};
+
+DebounceSink.prototype._event = function (t, x) {
+  this._clearTimer();
+  this.sink.event(t, x);
+};
+
+DebounceSink.prototype.end = function (t, x) {
+  if (this._clearTimer()) {
+    this.sink.event(t, this.value);
+    this.value = void 0;
+  }
+  this.sink.end(t, x);
+};
+
+DebounceSink.prototype.error = function (t, x) {
+  this._clearTimer();
+  this.sink.error(t, x);
+};
+
+DebounceSink.prototype.dispose = function () {
+  this._clearTimer();
+  return this.disposable.dispose();
+};
+
+DebounceSink.prototype._clearTimer = function () {
+  if (this.timer === null) {
+    return false;
+  }
+  this.timer.dispose();
+  this.timer = null;
+  return true;
+};
+
+function DebounceTask(debounce, value) {
+  this.debounce = debounce;
+  this.value = value;
+}
+
+DebounceTask.prototype.run = function (t) {
+  this.debounce._event(t, this.value);
+};
+
+DebounceTask.prototype.error = function (t, e) {
+  this.debounce.error(t, e);
+};
+
+DebounceTask.prototype.dispose = function () {};
+},{"../Stream":418,"../fusion/Map":450,"../sink/Pipe":466}],430:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.loop = loop;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Generalized feedback loop. Call a stepper function for each event. The stepper
+ * will be called with 2 params: the current seed and the an event value.  It must
+ * return a new { seed, value } pair. The `seed` will be fed back into the next
+ * invocation of stepper, and the `value` will be propagated as the event value.
+ * @param {function(seed:*, value:*):{seed:*, value:*}} stepper loop step function
+ * @param {*} seed initial seed value passed to first stepper call
+ * @param {Stream} stream event stream
+ * @returns {Stream} new stream whose values are the `value` field of the objects
+ * returned by the stepper
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function loop(stepper, seed, stream) {
+  return new _Stream2.default(new Loop(stepper, seed, stream.source));
+}
+
+function Loop(stepper, seed, source) {
+  this.step = stepper;
+  this.seed = seed;
+  this.source = source;
+}
+
+Loop.prototype.run = function (sink, scheduler) {
+  return this.source.run(new LoopSink(this.step, this.seed, sink), scheduler);
+};
+
+function LoopSink(stepper, seed, sink) {
+  this.step = stepper;
+  this.seed = seed;
+  this.sink = sink;
+}
+
+LoopSink.prototype.error = _Pipe2.default.prototype.error;
+
+LoopSink.prototype.event = function (t, x) {
+  var result = this.step(this.seed, x);
+  this.seed = result.seed;
+  this.sink.event(t, result.value);
+};
+
+LoopSink.prototype.end = function (t) {
+  this.sink.end(t, this.seed);
+};
+},{"../Stream":418,"../sink/Pipe":466}],431:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.merge = merge;
+exports.mergeArray = mergeArray;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _IndexSink = require('../sink/IndexSink');
+
+var _IndexSink2 = _interopRequireDefault(_IndexSink);
+
+var _core = require('../source/core');
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+var copy = base.copy;
+var reduce = base.reduce;
+
+/**
+ * @returns {Stream} stream containing events from all streams in the argument
+ * list in time order.  If two events are simultaneous they will be merged in
+ * arbitrary order.
+ */
+function merge() /* ...streams */{
+  return mergeArray(copy(arguments));
+}
+
+/**
+ * @param {Array} streams array of stream to merge
+ * @returns {Stream} stream containing events from all input observables
+ * in time order.  If two events are simultaneous they will be merged in
+ * arbitrary order.
+ */
+function mergeArray(streams) {
+  var l = streams.length;
+  return l === 0 ? (0, _core.empty)() : l === 1 ? streams[0] : new _Stream2.default(mergeSources(streams));
+}
+
+/**
+ * This implements fusion/flattening for merge.  It will
+ * fuse adjacent merge operations.  For example:
+ * - a.merge(b).merge(c) effectively becomes merge(a, b, c)
+ * - merge(a, merge(b, c)) effectively becomes merge(a, b, c)
+ * It does this by concatenating the sources arrays of
+ * any nested Merge sources, in effect "flattening" nested
+ * merge operations into a single merge.
+ */
+function mergeSources(streams) {
+  return new Merge(reduce(appendSources, [], streams));
+}
+
+function appendSources(sources, stream) {
+  var source = stream.source;
+  return source instanceof Merge ? sources.concat(source.sources) : sources.concat(source);
+}
+
+function Merge(sources) {
+  this.sources = sources;
+}
+
+Merge.prototype.run = function (sink, scheduler) {
+  var this$1 = this;
+
+  var l = this.sources.length;
+  var disposables = new Array(l);
+  var sinks = new Array(l);
+
+  var mergeSink = new MergeSink(disposables, sinks, sink);
+
+  for (var indexSink, i = 0; i < l; ++i) {
+    indexSink = sinks[i] = new _IndexSink2.default(i, mergeSink);
+    disposables[i] = this$1.sources[i].run(indexSink, scheduler);
+  }
+
+  return dispose.all(disposables);
+};
+
+function MergeSink(disposables, sinks, sink) {
+  this.sink = sink;
+  this.disposables = disposables;
+  this.activeCount = sinks.length;
+}
+
+MergeSink.prototype.error = _Pipe2.default.prototype.error;
+
+MergeSink.prototype.event = function (t, indexValue) {
+  this.sink.event(t, indexValue.value);
+};
+
+MergeSink.prototype.end = function (t, indexedValue) {
+  dispose.tryDispose(t, this.disposables[indexedValue.index], this.sink);
+  if (--this.activeCount === 0) {
+    this.sink.end(t, indexedValue.value);
+  }
+};
+},{"../Stream":418,"../disposable/dispose":446,"../sink/IndexSink":465,"../sink/Pipe":466,"../source/core":470,"@most/prelude":490}],432:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.mergeConcurrently = mergeConcurrently;
+exports.mergeMapConcurrently = mergeMapConcurrently;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _LinkedList = require('../LinkedList');
+
+var _LinkedList2 = _interopRequireDefault(_LinkedList);
+
+var _prelude = require('@most/prelude');
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function mergeConcurrently(concurrency, stream) {
+  return mergeMapConcurrently(_prelude.id, concurrency, stream);
+}
+
+function mergeMapConcurrently(f, concurrency, stream) {
+  return new _Stream2.default(new MergeConcurrently(f, concurrency, stream.source));
+}
+
+function MergeConcurrently(f, concurrency, source) {
+  this.f = f;
+  this.concurrency = concurrency;
+  this.source = source;
+}
+
+MergeConcurrently.prototype.run = function (sink, scheduler) {
+  return new Outer(this.f, this.concurrency, this.source, sink, scheduler);
+};
+
+function Outer(f, concurrency, source, sink, scheduler) {
+  this.f = f;
+  this.concurrency = concurrency;
+  this.sink = sink;
+  this.scheduler = scheduler;
+  this.pending = [];
+  this.current = new _LinkedList2.default();
+  this.disposable = dispose.once(source.run(this, scheduler));
+  this.active = true;
+}
+
+Outer.prototype.event = function (t, x) {
+  this._addInner(t, x);
+};
+
+Outer.prototype._addInner = function (t, x) {
+  if (this.current.length < this.concurrency) {
+    this._startInner(t, x);
+  } else {
+    this.pending.push(x);
+  }
+};
+
+Outer.prototype._startInner = function (t, x) {
+  try {
+    this._initInner(t, x);
+  } catch (e) {
+    this.error(t, e);
+  }
+};
+
+Outer.prototype._initInner = function (t, x) {
+  var innerSink = new Inner(t, this, this.sink);
+  innerSink.disposable = mapAndRun(this.f, x, innerSink, this.scheduler);
+  this.current.add(innerSink);
+};
+
+function mapAndRun(f, x, sink, scheduler) {
+  return f(x).source.run(sink, scheduler);
+}
+
+Outer.prototype.end = function (t, x) {
+  this.active = false;
+  dispose.tryDispose(t, this.disposable, this.sink);
+  this._checkEnd(t, x);
+};
+
+Outer.prototype.error = function (t, e) {
+  this.active = false;
+  this.sink.error(t, e);
+};
+
+Outer.prototype.dispose = function () {
+  this.active = false;
+  this.pending.length = 0;
+  return Promise.all([this.disposable.dispose(), this.current.dispose()]);
+};
+
+Outer.prototype._endInner = function (t, x, inner) {
+  this.current.remove(inner);
+  dispose.tryDispose(t, inner, this);
+
+  if (this.pending.length === 0) {
+    this._checkEnd(t, x);
+  } else {
+    this._startInner(t, this.pending.shift());
+  }
+};
+
+Outer.prototype._checkEnd = function (t, x) {
+  if (!this.active && this.current.isEmpty()) {
+    this.sink.end(t, x);
+  }
+};
+
+function Inner(time, outer, sink) {
+  this.prev = this.next = null;
+  this.time = time;
+  this.outer = outer;
+  this.sink = sink;
+  this.disposable = void 0;
+}
+
+Inner.prototype.event = function (t, x) {
+  this.sink.event(Math.max(t, this.time), x);
+};
+
+Inner.prototype.end = function (t, x) {
+  this.outer._endInner(Math.max(t, this.time), x, this);
+};
+
+Inner.prototype.error = function (t, e) {
+  this.outer.error(Math.max(t, this.time), e);
+};
+
+Inner.prototype.dispose = function () {
+  return this.disposable.dispose();
+};
+},{"../LinkedList":415,"../Stream":418,"../disposable/dispose":446,"@most/prelude":490}],433:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.observe = observe;
+exports.drain = drain;
+
+var _runSource = require('../runSource');
+
+var _transform = require('./transform');
+
+/**
+ * Observe all the event values in the stream in time order. The
+ * provided function `f` will be called for each event value
+ * @param {function(x:T):*} f function to call with each event value
+ * @param {Stream<T>} stream stream to observe
+ * @return {Promise} promise that fulfills after the stream ends without
+ *  an error, or rejects if the stream ends with an error.
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function observe(f, stream) {
+  return drain((0, _transform.tap)(f, stream));
+}
+
+/**
+ * "Run" a stream by creating demand and consuming all events
+ * @param {Stream<T>} stream stream to drain
+ * @return {Promise} promise that fulfills after the stream ends without
+ *  an error, or rejects if the stream ends with an error.
+ */
+function drain(stream) {
+  return (0, _runSource.withDefaultScheduler)(stream.source);
+}
+},{"../runSource":457,"./transform":442}],434:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.fromPromise = fromPromise;
+exports.awaitPromises = awaitPromises;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _fatalError = require('../fatalError');
+
+var _fatalError2 = _interopRequireDefault(_fatalError);
+
+var _core = require('../source/core');
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Create a stream containing only the promise's fulfillment
+ * value at the time it fulfills.
+ * @param {Promise<T>} p promise
+ * @return {Stream<T>} stream containing promise's fulfillment value.
+ *  If the promise rejects, the stream will error
+ */
+function fromPromise(p) {
+  return awaitPromises((0, _core.of)(p));
+}
+
+/**
+ * Turn a Stream<Promise<T>> into Stream<T> by awaiting each promise.
+ * Event order is preserved.
+ * @param {Stream<Promise<T>>} stream
+ * @return {Stream<T>} stream of fulfillment values.  The stream will
+ * error if any promise rejects.
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function awaitPromises(stream) {
+  return new _Stream2.default(new Await(stream.source));
+}
+
+function Await(source) {
+  this.source = source;
+}
+
+Await.prototype.run = function (sink, scheduler) {
+  return this.source.run(new AwaitSink(sink, scheduler), scheduler);
+};
+
+function AwaitSink(sink, scheduler) {
+  this.sink = sink;
+  this.scheduler = scheduler;
+  this.queue = Promise.resolve();
+  var self = this;
+
+  // Pre-create closures, to avoid creating them per event
+  this._eventBound = function (x) {
+    self.sink.event(self.scheduler.now(), x);
+  };
+
+  this._endBound = function (x) {
+    self.sink.end(self.scheduler.now(), x);
+  };
+
+  this._errorBound = function (e) {
+    self.sink.error(self.scheduler.now(), e);
+  };
+}
+
+AwaitSink.prototype.event = function (t, promise) {
+  var self = this;
+  this.queue = this.queue.then(function () {
+    return self._event(promise);
+  }).catch(this._errorBound);
+};
+
+AwaitSink.prototype.end = function (t, x) {
+  var self = this;
+  this.queue = this.queue.then(function () {
+    return self._end(x);
+  }).catch(this._errorBound);
+};
+
+AwaitSink.prototype.error = function (t, e) {
+  var self = this;
+  // Don't resolve error values, propagate directly
+  this.queue = this.queue.then(function () {
+    return self._errorBound(e);
+  }).catch(_fatalError2.default);
+};
+
+AwaitSink.prototype._event = function (promise) {
+  return promise.then(this._eventBound);
+};
+
+AwaitSink.prototype._end = function (x) {
+  return Promise.resolve(x).then(this._endBound);
+};
+},{"../Stream":418,"../fatalError":447,"../source/core":470}],435:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.sample = sample;
+exports.sampleWith = sampleWith;
+exports.sampleArray = sampleArray;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+var _invoke = require('../invoke');
+
+var _invoke2 = _interopRequireDefault(_invoke);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * When an event arrives on sampler, emit the result of calling f with the latest
+ * values of all streams being sampled
+ * @param {function(...values):*} f function to apply to each set of sampled values
+ * @param {Stream} sampler streams will be sampled whenever an event arrives
+ *  on sampler
+ * @returns {Stream} stream of sampled and transformed values
+ */
+function sample(f, sampler /*, ...streams */) {
+  return sampleArray(f, sampler, base.drop(2, arguments));
+}
+
+/**
+ * When an event arrives on sampler, emit the latest event value from stream.
+ * @param {Stream} sampler stream of events at whose arrival time
+ *  stream's latest value will be propagated
+ * @param {Stream} stream stream of values
+ * @returns {Stream} sampled stream of values
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function sampleWith(sampler, stream) {
+  return new _Stream2.default(new Sampler(base.id, sampler.source, [stream.source]));
+}
+
+function sampleArray(f, sampler, streams) {
+  return new _Stream2.default(new Sampler(f, sampler.source, base.map(getSource, streams)));
+}
+
+function getSource(stream) {
+  return stream.source;
+}
+
+function Sampler(f, sampler, sources) {
+  this.f = f;
+  this.sampler = sampler;
+  this.sources = sources;
+}
+
+Sampler.prototype.run = function (sink, scheduler) {
+  var this$1 = this;
+
+  var l = this.sources.length;
+  var disposables = new Array(l + 1);
+  var sinks = new Array(l);
+
+  var sampleSink = new SampleSink(this.f, sinks, sink);
+
+  for (var hold, i = 0; i < l; ++i) {
+    hold = sinks[i] = new Hold(sampleSink);
+    disposables[i] = this$1.sources[i].run(hold, scheduler);
+  }
+
+  disposables[i] = this.sampler.run(sampleSink, scheduler);
+
+  return dispose.all(disposables);
+};
+
+function Hold(sink) {
+  this.sink = sink;
+  this.hasValue = false;
+}
+
+Hold.prototype.event = function (t, x) {
+  this.value = x;
+  this.hasValue = true;
+  this.sink._notify(this);
+};
+
+Hold.prototype.end = function () {};
+Hold.prototype.error = _Pipe2.default.prototype.error;
+
+function SampleSink(f, sinks, sink) {
+  this.f = f;
+  this.sinks = sinks;
+  this.sink = sink;
+  this.active = false;
+}
+
+SampleSink.prototype._notify = function () {
+  if (!this.active) {
+    this.active = this.sinks.every(hasValue);
+  }
+};
+
+SampleSink.prototype.event = function (t) {
+  if (this.active) {
+    this.sink.event(t, (0, _invoke2.default)(this.f, base.map(getValue, this.sinks)));
+  }
+};
+
+SampleSink.prototype.end = _Pipe2.default.prototype.end;
+SampleSink.prototype.error = _Pipe2.default.prototype.error;
+
+function hasValue(hold) {
+  return hold.hasValue;
+}
+
+function getValue(hold) {
+  return hold.value;
+}
+},{"../Stream":418,"../disposable/dispose":446,"../invoke":452,"../sink/Pipe":466,"@most/prelude":490}],436:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.take = take;
+exports.skip = skip;
+exports.slice = slice;
+exports.takeWhile = takeWhile;
+exports.skipWhile = skipWhile;
+exports.skipAfter = skipAfter;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _core = require('../source/core');
+
+var core = _interopRequireWildcard(_core);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _Map = require('../fusion/Map');
+
+var _Map2 = _interopRequireDefault(_Map);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * @param {number} n
+ * @param {Stream} stream
+ * @returns {Stream} new stream containing only up to the first n items from stream
+ */
+function take(n, stream) {
+  return slice(0, n, stream);
+}
+
+/**
+ * @param {number} n
+ * @param {Stream} stream
+ * @returns {Stream} new stream with the first n items removed
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function skip(n, stream) {
+  return slice(n, Infinity, stream);
+}
+
+/**
+ * Slice a stream by index. Negative start/end indexes are not supported
+ * @param {number} start
+ * @param {number} end
+ * @param {Stream} stream
+ * @returns {Stream} stream containing items where start <= index < end
+ */
+function slice(start, end, stream) {
+  return end <= start ? core.empty() : new _Stream2.default(sliceSource(start, end, stream.source));
+}
+
+function sliceSource(start, end, source) {
+  return source instanceof _Map2.default ? commuteMapSlice(start, end, source) : source instanceof Slice ? fuseSlice(start, end, source) : new Slice(start, end, source);
+}
+
+function commuteMapSlice(start, end, source) {
+  return _Map2.default.create(source.f, sliceSource(start, end, source.source));
+}
+
+function fuseSlice(start, end, source) {
+  start += source.min;
+  end = Math.min(end + source.min, source.max);
+  return new Slice(start, end, source.source);
+}
+
+function Slice(min, max, source) {
+  this.source = source;
+  this.min = min;
+  this.max = max;
+}
+
+Slice.prototype.run = function (sink, scheduler) {
+  var disposable = dispose.settable();
+  var sliceSink = new SliceSink(this.min, this.max - this.min, sink, disposable);
+
+  disposable.setDisposable(this.source.run(sliceSink, scheduler));
+  return disposable;
+};
+
+function SliceSink(skip, take, sink, disposable) {
+  this.sink = sink;
+  this.skip = skip;
+  this.take = take;
+  this.disposable = disposable;
+}
+
+SliceSink.prototype.end = _Pipe2.default.prototype.end;
+SliceSink.prototype.error = _Pipe2.default.prototype.error;
+
+SliceSink.prototype.event = function (t, x) {
+  /* eslint complexity: [1, 4] */
+  if (this.skip > 0) {
+    this.skip -= 1;
+    return;
+  }
+
+  if (this.take === 0) {
+    return;
+  }
+
+  this.take -= 1;
+  this.sink.event(t, x);
+  if (this.take === 0) {
+    this.disposable.dispose();
+    this.sink.end(t, x);
+  }
+};
+
+function takeWhile(p, stream) {
+  return new _Stream2.default(new TakeWhile(p, stream.source));
+}
+
+function TakeWhile(p, source) {
+  this.p = p;
+  this.source = source;
+}
+
+TakeWhile.prototype.run = function (sink, scheduler) {
+  var disposable = dispose.settable();
+  var takeWhileSink = new TakeWhileSink(this.p, sink, disposable);
+
+  disposable.setDisposable(this.source.run(takeWhileSink, scheduler));
+  return disposable;
+};
+
+function TakeWhileSink(p, sink, disposable) {
+  this.p = p;
+  this.sink = sink;
+  this.active = true;
+  this.disposable = disposable;
+}
+
+TakeWhileSink.prototype.end = _Pipe2.default.prototype.end;
+TakeWhileSink.prototype.error = _Pipe2.default.prototype.error;
+
+TakeWhileSink.prototype.event = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+
+  var p = this.p;
+  this.active = p(x);
+  if (this.active) {
+    this.sink.event(t, x);
+  } else {
+    this.disposable.dispose();
+    this.sink.end(t, x);
+  }
+};
+
+function skipWhile(p, stream) {
+  return new _Stream2.default(new SkipWhile(p, stream.source));
+}
+
+function SkipWhile(p, source) {
+  this.p = p;
+  this.source = source;
+}
+
+SkipWhile.prototype.run = function (sink, scheduler) {
+  return this.source.run(new SkipWhileSink(this.p, sink), scheduler);
+};
+
+function SkipWhileSink(p, sink) {
+  this.p = p;
+  this.sink = sink;
+  this.skipping = true;
+}
+
+SkipWhileSink.prototype.end = _Pipe2.default.prototype.end;
+SkipWhileSink.prototype.error = _Pipe2.default.prototype.error;
+
+SkipWhileSink.prototype.event = function (t, x) {
+  if (this.skipping) {
+    var p = this.p;
+    this.skipping = p(x);
+    if (this.skipping) {
+      return;
+    }
+  }
+
+  this.sink.event(t, x);
+};
+
+function skipAfter(p, stream) {
+  return new _Stream2.default(new SkipAfter(p, stream.source));
+}
+
+function SkipAfter(p, source) {
+  this.p = p;
+  this.source = source;
+}
+
+SkipAfter.prototype.run = function run(sink, scheduler) {
+  return this.source.run(new SkipAfterSink(this.p, sink), scheduler);
+};
+
+function SkipAfterSink(p, sink) {
+  this.p = p;
+  this.sink = sink;
+  this.skipping = false;
+}
+
+SkipAfterSink.prototype.event = function event(t, x) {
+  if (this.skipping) {
+    return;
+  }
+
+  var p = this.p;
+  this.skipping = p(x);
+  this.sink.event(t, x);
+
+  if (this.skipping) {
+    this.sink.end(t, x);
+  }
+};
+
+SkipAfterSink.prototype.end = _Pipe2.default.prototype.end;
+SkipAfterSink.prototype.error = _Pipe2.default.prototype.error;
+},{"../Stream":418,"../disposable/dispose":446,"../fusion/Map":450,"../sink/Pipe":466,"../source/core":470}],437:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.switch = undefined;
+exports.switchLatest = switchLatest;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Given a stream of streams, return a new stream that adopts the behavior
+ * of the most recent inner stream.
+ * @param {Stream} stream of streams on which to switch
+ * @returns {Stream} switching stream
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function switchLatest(stream) {
+  return new _Stream2.default(new Switch(stream.source));
+}
+
+exports.switch = switchLatest;
+
+
+function Switch(source) {
+  this.source = source;
+}
+
+Switch.prototype.run = function (sink, scheduler) {
+  var switchSink = new SwitchSink(sink, scheduler);
+  return dispose.all([switchSink, this.source.run(switchSink, scheduler)]);
+};
+
+function SwitchSink(sink, scheduler) {
+  this.sink = sink;
+  this.scheduler = scheduler;
+  this.current = null;
+  this.ended = false;
+}
+
+SwitchSink.prototype.event = function (t, stream) {
+  this._disposeCurrent(t); // TODO: capture the result of this dispose
+  this.current = new Segment(t, Infinity, this, this.sink);
+  this.current.disposable = stream.source.run(this.current, this.scheduler);
+};
+
+SwitchSink.prototype.end = function (t, x) {
+  this.ended = true;
+  this._checkEnd(t, x);
+};
+
+SwitchSink.prototype.error = function (t, e) {
+  this.ended = true;
+  this.sink.error(t, e);
+};
+
+SwitchSink.prototype.dispose = function () {
+  return this._disposeCurrent(this.scheduler.now());
+};
+
+SwitchSink.prototype._disposeCurrent = function (t) {
+  if (this.current !== null) {
+    return this.current._dispose(t);
+  }
+};
+
+SwitchSink.prototype._disposeInner = function (t, inner) {
+  inner._dispose(t); // TODO: capture the result of this dispose
+  if (inner === this.current) {
+    this.current = null;
+  }
+};
+
+SwitchSink.prototype._checkEnd = function (t, x) {
+  if (this.ended && this.current === null) {
+    this.sink.end(t, x);
+  }
+};
+
+SwitchSink.prototype._endInner = function (t, x, inner) {
+  this._disposeInner(t, inner);
+  this._checkEnd(t, x);
+};
+
+SwitchSink.prototype._errorInner = function (t, e, inner) {
+  this._disposeInner(t, inner);
+  this.sink.error(t, e);
+};
+
+function Segment(min, max, outer, sink) {
+  this.min = min;
+  this.max = max;
+  this.outer = outer;
+  this.sink = sink;
+  this.disposable = dispose.empty();
+}
+
+Segment.prototype.event = function (t, x) {
+  if (t < this.max) {
+    this.sink.event(Math.max(t, this.min), x);
+  }
+};
+
+Segment.prototype.end = function (t, x) {
+  this.outer._endInner(Math.max(t, this.min), x, this);
+};
+
+Segment.prototype.error = function (t, e) {
+  this.outer._errorInner(Math.max(t, this.min), e, this);
+};
+
+Segment.prototype._dispose = function (t) {
+  this.max = t;
+  dispose.tryDispose(t, this.disposable, this.sink);
+};
+},{"../Stream":418,"../disposable/dispose":446}],438:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.thru = thru;
+/** @license MIT License (c) copyright 2010-2017 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function thru(f, stream) {
+  return f(stream);
+}
+},{}],439:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.takeUntil = takeUntil;
+exports.skipUntil = skipUntil;
+exports.during = during;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _flatMap = require('../combinator/flatMap');
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function takeUntil(signal, stream) {
+  return new _Stream2.default(new Until(signal.source, stream.source));
+}
+
+function skipUntil(signal, stream) {
+  return new _Stream2.default(new Since(signal.source, stream.source));
+}
+
+function during(timeWindow, stream) {
+  return takeUntil((0, _flatMap.join)(timeWindow), skipUntil(timeWindow, stream));
+}
+
+function Until(maxSignal, source) {
+  this.maxSignal = maxSignal;
+  this.source = source;
+}
+
+Until.prototype.run = function (sink, scheduler) {
+  var min = new Bound(-Infinity, sink);
+  var max = new UpperBound(this.maxSignal, sink, scheduler);
+  var disposable = this.source.run(new TimeWindowSink(min, max, sink), scheduler);
+
+  return dispose.all([min, max, disposable]);
+};
+
+function Since(minSignal, source) {
+  this.minSignal = minSignal;
+  this.source = source;
+}
+
+Since.prototype.run = function (sink, scheduler) {
+  var min = new LowerBound(this.minSignal, sink, scheduler);
+  var max = new Bound(Infinity, sink);
+  var disposable = this.source.run(new TimeWindowSink(min, max, sink), scheduler);
+
+  return dispose.all([min, max, disposable]);
+};
+
+function Bound(value, sink) {
+  this.value = value;
+  this.sink = sink;
+}
+
+Bound.prototype.error = _Pipe2.default.prototype.error;
+Bound.prototype.event = noop;
+Bound.prototype.end = noop;
+Bound.prototype.dispose = noop;
+
+function TimeWindowSink(min, max, sink) {
+  this.min = min;
+  this.max = max;
+  this.sink = sink;
+}
+
+TimeWindowSink.prototype.event = function (t, x) {
+  if (t >= this.min.value && t < this.max.value) {
+    this.sink.event(t, x);
+  }
+};
+
+TimeWindowSink.prototype.error = _Pipe2.default.prototype.error;
+TimeWindowSink.prototype.end = _Pipe2.default.prototype.end;
+
+function LowerBound(signal, sink, scheduler) {
+  this.value = Infinity;
+  this.sink = sink;
+  this.disposable = signal.run(this, scheduler);
+}
+
+LowerBound.prototype.event = function (t /*, x */) {
+  if (t < this.value) {
+    this.value = t;
+  }
+};
+
+LowerBound.prototype.end = noop;
+LowerBound.prototype.error = _Pipe2.default.prototype.error;
+
+LowerBound.prototype.dispose = function () {
+  return this.disposable.dispose();
+};
+
+function UpperBound(signal, sink, scheduler) {
+  this.value = Infinity;
+  this.sink = sink;
+  this.disposable = signal.run(this, scheduler);
+}
+
+UpperBound.prototype.event = function (t, x) {
+  if (t < this.value) {
+    this.value = t;
+    this.sink.end(t, x);
+  }
+};
+
+UpperBound.prototype.end = noop;
+UpperBound.prototype.error = _Pipe2.default.prototype.error;
+
+UpperBound.prototype.dispose = function () {
+  return this.disposable.dispose();
+};
+
+function noop() {}
+},{"../Stream":418,"../combinator/flatMap":428,"../disposable/dispose":446,"../sink/Pipe":466}],440:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.timestamp = timestamp;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function timestamp(stream) {
+  return new _Stream2.default(new Timestamp(stream.source));
+}
+
+function Timestamp(source) {
+  this.source = source;
+}
+
+Timestamp.prototype.run = function (sink, scheduler) {
+  return this.source.run(new TimestampSink(sink), scheduler);
+};
+
+function TimestampSink(sink) {
+  this.sink = sink;
+}
+
+TimestampSink.prototype.end = _Pipe2.default.prototype.end;
+TimestampSink.prototype.error = _Pipe2.default.prototype.error;
+
+TimestampSink.prototype.event = function (t, x) {
+  this.sink.event(t, { time: t, value: x });
+};
+},{"../Stream":418,"../sink/Pipe":466}],441:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.transduce = transduce;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Transform a stream by passing its events through a transducer.
+ * @param  {function} transducer transducer function
+ * @param  {Stream} stream stream whose events will be passed through the
+ *  transducer
+ * @return {Stream} stream of events transformed by the transducer
+ */
+function transduce(transducer, stream) {
+  return new _Stream2.default(new Transduce(transducer, stream.source));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function Transduce(transducer, source) {
+  this.transducer = transducer;
+  this.source = source;
+}
+
+Transduce.prototype.run = function (sink, scheduler) {
+  var xf = this.transducer(new Transformer(sink));
+  return this.source.run(new TransduceSink(getTxHandler(xf), sink), scheduler);
+};
+
+function TransduceSink(adapter, sink) {
+  this.xf = adapter;
+  this.sink = sink;
+}
+
+TransduceSink.prototype.event = function (t, x) {
+  var next = this.xf.step(t, x);
+
+  return this.xf.isReduced(next) ? this.sink.end(t, this.xf.getResult(next)) : next;
+};
+
+TransduceSink.prototype.end = function (t, x) {
+  return this.xf.result(x);
+};
+
+TransduceSink.prototype.error = function (t, e) {
+  return this.sink.error(t, e);
+};
+
+function Transformer(sink) {
+  this.time = -Infinity;
+  this.sink = sink;
+}
+
+Transformer.prototype['@@transducer/init'] = Transformer.prototype.init = function () {};
+
+Transformer.prototype['@@transducer/step'] = Transformer.prototype.step = function (t, x) {
+  if (!isNaN(t)) {
+    this.time = Math.max(t, this.time);
+  }
+  return this.sink.event(this.time, x);
+};
+
+Transformer.prototype['@@transducer/result'] = Transformer.prototype.result = function (x) {
+  return this.sink.end(this.time, x);
+};
+
+/**
+* Given an object supporting the new or legacy transducer protocol,
+* create an adapter for it.
+* @param {object} tx transform
+* @returns {TxAdapter|LegacyTxAdapter}
+*/
+function getTxHandler(tx) {
+  return typeof tx['@@transducer/step'] === 'function' ? new TxAdapter(tx) : new LegacyTxAdapter(tx);
+}
+
+/**
+* Adapter for new official transducer protocol
+* @param {object} tx transform
+* @constructor
+*/
+function TxAdapter(tx) {
+  this.tx = tx;
+}
+
+TxAdapter.prototype.step = function (t, x) {
+  return this.tx['@@transducer/step'](t, x);
+};
+TxAdapter.prototype.result = function (x) {
+  return this.tx['@@transducer/result'](x);
+};
+TxAdapter.prototype.isReduced = function (x) {
+  return x != null && x['@@transducer/reduced'];
+};
+TxAdapter.prototype.getResult = function (x) {
+  return x['@@transducer/value'];
+};
+
+/**
+* Adapter for older transducer protocol
+* @param {object} tx transform
+* @constructor
+*/
+function LegacyTxAdapter(tx) {
+  this.tx = tx;
+}
+
+LegacyTxAdapter.prototype.step = function (t, x) {
+  return this.tx.step(t, x);
+};
+LegacyTxAdapter.prototype.result = function (x) {
+  return this.tx.result(x);
+};
+LegacyTxAdapter.prototype.isReduced = function (x) {
+  return x != null && x.__transducers_reduced__;
+};
+LegacyTxAdapter.prototype.getResult = function (x) {
+  return x.value;
+};
+},{"../Stream":418}],442:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.map = map;
+exports.constant = constant;
+exports.tap = tap;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _Map = require('../fusion/Map');
+
+var _Map2 = _interopRequireDefault(_Map);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Transform each value in the stream by applying f to each
+ * @param {function(*):*} f mapping function
+ * @param {Stream} stream stream to map
+ * @returns {Stream} stream containing items transformed by f
+ */
+function map(f, stream) {
+  return new _Stream2.default(_Map2.default.create(f, stream.source));
+}
+
+/**
+* Replace each value in the stream with x
+* @param {*} x
+* @param {Stream} stream
+* @returns {Stream} stream containing items replaced with x
+*/
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function constant(x, stream) {
+  return map(function () {
+    return x;
+  }, stream);
+}
+
+/**
+* Perform a side effect for each item in the stream
+* @param {function(x:*):*} f side effect to execute for each item. The
+*  return value will be discarded.
+* @param {Stream} stream stream to tap
+* @returns {Stream} new stream containing the same items as this stream
+*/
+function tap(f, stream) {
+  return new _Stream2.default(new Tap(f, stream.source));
+}
+
+function Tap(f, source) {
+  this.source = source;
+  this.f = f;
+}
+
+Tap.prototype.run = function (sink, scheduler) {
+  return this.source.run(new TapSink(this.f, sink), scheduler);
+};
+
+function TapSink(f, sink) {
+  this.sink = sink;
+  this.f = f;
+}
+
+TapSink.prototype.end = _Pipe2.default.prototype.end;
+TapSink.prototype.error = _Pipe2.default.prototype.error;
+
+TapSink.prototype.event = function (t, x) {
+  var f = this.f;
+  f(x);
+  this.sink.event(t, x);
+};
+},{"../Stream":418,"../fusion/Map":450,"../sink/Pipe":466}],443:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.zip = zip;
+exports.zipArray = zipArray;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _transform = require('./transform');
+
+var transform = _interopRequireWildcard(_transform);
+
+var _core = require('../source/core');
+
+var core = _interopRequireWildcard(_core);
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _IndexSink = require('../sink/IndexSink');
+
+var _IndexSink2 = _interopRequireDefault(_IndexSink);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+var _invoke = require('../invoke');
+
+var _invoke2 = _interopRequireDefault(_invoke);
+
+var _Queue = require('../Queue');
+
+var _Queue2 = _interopRequireDefault(_Queue);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+var map = base.map; /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+var tail = base.tail;
+
+/**
+ * Combine streams pairwise (or tuple-wise) by index by applying f to values
+ * at corresponding indices.  The returned stream ends when any of the input
+ * streams ends.
+ * @param {function} f function to combine values
+ * @returns {Stream} new stream with items at corresponding indices combined
+ *  using f
+ */
+function zip(f /*, ...streams */) {
+  return zipArray(f, tail(arguments));
+}
+
+/**
+* Combine streams pairwise (or tuple-wise) by index by applying f to values
+* at corresponding indices.  The returned stream ends when any of the input
+* streams ends.
+* @param {function} f function to combine values
+* @param {[Stream]} streams streams to zip using f
+* @returns {Stream} new stream with items at corresponding indices combined
+*  using f
+*/
+function zipArray(f, streams) {
+  return streams.length === 0 ? core.empty() : streams.length === 1 ? transform.map(f, streams[0]) : new _Stream2.default(new Zip(f, map(getSource, streams)));
+}
+
+function getSource(stream) {
+  return stream.source;
+}
+
+function Zip(f, sources) {
+  this.f = f;
+  this.sources = sources;
+}
+
+Zip.prototype.run = function (sink, scheduler) {
+  var this$1 = this;
+
+  var l = this.sources.length;
+  var disposables = new Array(l);
+  var sinks = new Array(l);
+  var buffers = new Array(l);
+
+  var zipSink = new ZipSink(this.f, buffers, sinks, sink);
+
+  for (var indexSink, i = 0; i < l; ++i) {
+    buffers[i] = new _Queue2.default();
+    indexSink = sinks[i] = new _IndexSink2.default(i, zipSink);
+    disposables[i] = this$1.sources[i].run(indexSink, scheduler);
+  }
+
+  return dispose.all(disposables);
+};
+
+function ZipSink(f, buffers, sinks, sink) {
+  this.f = f;
+  this.sinks = sinks;
+  this.sink = sink;
+  this.buffers = buffers;
+}
+
+ZipSink.prototype.event = function (t, indexedValue) {
+  // eslint-disable-line complexity
+  var buffers = this.buffers;
+  var buffer = buffers[indexedValue.index];
+
+  buffer.push(indexedValue.value);
+
+  if (buffer.length() === 1) {
+    if (!ready(this.buffers)) {
+      return;
+    }
+
+    emitZipped(this.f, t, buffers, this.sink);
+
+    if (ended(this.buffers, this.sinks)) {
+      this.sink.end(t, void 0);
+    }
+  }
+};
+
+ZipSink.prototype.end = function (t, indexedValue) {
+  var buffer = this.buffers[indexedValue.index];
+  if (buffer.isEmpty()) {
+    this.sink.end(t, indexedValue.value);
+  }
+};
+
+ZipSink.prototype.error = _Pipe2.default.prototype.error;
+
+function emitZipped(f, t, buffers, sink) {
+  sink.event(t, (0, _invoke2.default)(f, map(head, buffers)));
+}
+
+function head(buffer) {
+  return buffer.shift();
+}
+
+function ended(buffers, sinks) {
+  for (var i = 0, l = buffers.length; i < l; ++i) {
+    if (buffers[i].isEmpty() && !sinks[i].active) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function ready(buffers) {
+  for (var i = 0, l = buffers.length; i < l; ++i) {
+    if (buffers[i].isEmpty()) {
+      return false;
+    }
+  }
+  return true;
+}
+},{"../Queue":417,"../Stream":418,"../disposable/dispose":446,"../invoke":452,"../sink/IndexSink":465,"../sink/Pipe":466,"../source/core":470,"./transform":442,"@most/prelude":490}],444:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = Disposable;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+/**
+ * Create a new Disposable which will dispose its underlying resource.
+ * @param {function} dispose function
+ * @param {*?} data any data to be passed to disposer function
+ * @constructor
+ */
+function Disposable(dispose, data) {
+  this._dispose = dispose;
+  this._data = data;
+}
+
+Disposable.prototype.dispose = function () {
+  return this._dispose(this._data);
+};
+},{}],445:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = SettableDisposable;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function SettableDisposable() {
+  this.disposable = void 0;
+  this.disposed = false;
+  this._resolve = void 0;
+
+  var self = this;
+  this.result = new Promise(function (resolve) {
+    self._resolve = resolve;
+  });
+}
+
+SettableDisposable.prototype.setDisposable = function (disposable) {
+  if (this.disposable !== void 0) {
+    throw new Error('setDisposable called more than once');
+  }
+
+  this.disposable = disposable;
+
+  if (this.disposed) {
+    this._resolve(disposable.dispose());
+  }
+};
+
+SettableDisposable.prototype.dispose = function () {
+  if (this.disposed) {
+    return this.result;
+  }
+
+  this.disposed = true;
+
+  if (this.disposable !== void 0) {
+    this.result = this.disposable.dispose();
+  }
+
+  return this.result;
+};
+},{}],446:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.tryDispose = tryDispose;
+exports.create = create;
+exports.empty = empty;
+exports.all = all;
+exports.promised = promised;
+exports.settable = settable;
+exports.once = once;
+
+var _Disposable = require('./Disposable');
+
+var _Disposable2 = _interopRequireDefault(_Disposable);
+
+var _SettableDisposable = require('./SettableDisposable');
+
+var _SettableDisposable2 = _interopRequireDefault(_SettableDisposable);
+
+var _Promise = require('../Promise');
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+var map = base.map;
+var identity = base.id;
+
+/**
+ * Call disposable.dispose.  If it returns a promise, catch promise
+ * error and forward it through the provided sink.
+ * @param {number} t time
+ * @param {{dispose: function}} disposable
+ * @param {{error: function}} sink
+ * @return {*} result of disposable.dispose
+ */
+function tryDispose(t, disposable, sink) {
+  var result = disposeSafely(disposable);
+  return (0, _Promise.isPromise)(result) ? result.catch(function (e) {
+    sink.error(t, e);
+  }) : result;
+}
+
+/**
+ * Create a new Disposable which will dispose its underlying resource
+ * at most once.
+ * @param {function} dispose function
+ * @param {*?} data any data to be passed to disposer function
+ * @return {Disposable}
+ */
+function create(dispose, data) {
+  return once(new _Disposable2.default(dispose, data));
+}
+
+/**
+ * Create a noop disposable. Can be used to satisfy a Disposable
+ * requirement when no actual resource needs to be disposed.
+ * @return {Disposable|exports|module.exports}
+ */
+function empty() {
+  return new _Disposable2.default(identity, void 0);
+}
+
+/**
+ * Create a disposable that will dispose all input disposables in parallel.
+ * @param {Array<Disposable>} disposables
+ * @return {Disposable}
+ */
+function all(disposables) {
+  return create(disposeAll, disposables);
+}
+
+function disposeAll(disposables) {
+  return Promise.all(map(disposeSafely, disposables));
+}
+
+function disposeSafely(disposable) {
+  try {
+    return disposable.dispose();
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
+
+/**
+ * Create a disposable from a promise for another disposable
+ * @param {Promise<Disposable>} disposablePromise
+ * @return {Disposable}
+ */
+function promised(disposablePromise) {
+  return create(disposePromise, disposablePromise);
+}
+
+function disposePromise(disposablePromise) {
+  return disposablePromise.then(disposeOne);
+}
+
+function disposeOne(disposable) {
+  return disposable.dispose();
+}
+
+/**
+ * Create a disposable proxy that allows its underlying disposable to
+ * be set later.
+ * @return {SettableDisposable}
+ */
+function settable() {
+  return new _SettableDisposable2.default();
+}
+
+/**
+ * Wrap an existing disposable (which may not already have been once()d)
+ * so that it will only dispose its underlying resource at most once.
+ * @param {{ dispose: function() }} disposable
+ * @return {Disposable} wrapped disposable
+ */
+function once(disposable) {
+  return new _Disposable2.default(disposeMemoized, memoized(disposable));
+}
+
+function disposeMemoized(memoized) {
+  if (!memoized.disposed) {
+    memoized.disposed = true;
+    memoized.value = disposeSafely(memoized.disposable);
+    memoized.disposable = void 0;
+  }
+
+  return memoized.value;
+}
+
+function memoized(disposable) {
+  return { disposed: false, disposable: disposable, value: void 0 };
+}
+},{"../Promise":416,"./Disposable":444,"./SettableDisposable":445,"@most/prelude":490}],447:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = fatalError;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function fatalError(e) {
+  setTimeout(function () {
+    throw e;
+  }, 0);
+}
+},{}],448:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = Filter;
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function Filter(p, source) {
+  this.p = p;
+  this.source = source;
+}
+
+/**
+ * Create a filtered source, fusing adjacent filter.filter if possible
+ * @param {function(x:*):boolean} p filtering predicate
+ * @param {{run:function}} source source to filter
+ * @returns {Filter} filtered source
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+Filter.create = function createFilter(p, source) {
+  if (source instanceof Filter) {
+    return new Filter(and(source.p, p), source.source);
+  }
+
+  return new Filter(p, source);
+};
+
+Filter.prototype.run = function (sink, scheduler) {
+  return this.source.run(new FilterSink(this.p, sink), scheduler);
+};
+
+function FilterSink(p, sink) {
+  this.p = p;
+  this.sink = sink;
+}
+
+FilterSink.prototype.end = _Pipe2.default.prototype.end;
+FilterSink.prototype.error = _Pipe2.default.prototype.error;
+
+FilterSink.prototype.event = function (t, x) {
+  var p = this.p;
+  p(x) && this.sink.event(t, x);
+};
+
+function and(p, q) {
+  return function (x) {
+    return p(x) && q(x);
+  };
+}
+},{"../sink/Pipe":466}],449:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = FilterMap;
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function FilterMap(p, f, source) {
+  this.p = p;
+  this.f = f;
+  this.source = source;
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+FilterMap.prototype.run = function (sink, scheduler) {
+  return this.source.run(new FilterMapSink(this.p, this.f, sink), scheduler);
+};
+
+function FilterMapSink(p, f, sink) {
+  this.p = p;
+  this.f = f;
+  this.sink = sink;
+}
+
+FilterMapSink.prototype.event = function (t, x) {
+  var f = this.f;
+  var p = this.p;
+  p(x) && this.sink.event(t, f(x));
+};
+
+FilterMapSink.prototype.end = _Pipe2.default.prototype.end;
+FilterMapSink.prototype.error = _Pipe2.default.prototype.error;
+},{"../sink/Pipe":466}],450:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = Map;
+
+var _Pipe = require('../sink/Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+var _Filter = require('./Filter');
+
+var _Filter2 = _interopRequireDefault(_Filter);
+
+var _FilterMap = require('./FilterMap');
+
+var _FilterMap2 = _interopRequireDefault(_FilterMap);
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function Map(f, source) {
+  this.f = f;
+  this.source = source;
+}
+
+/**
+ * Create a mapped source, fusing adjacent map.map, filter.map,
+ * and filter.map.map if possible
+ * @param {function(*):*} f mapping function
+ * @param {{run:function}} source source to map
+ * @returns {Map|FilterMap} mapped source, possibly fused
+ */
+Map.create = function createMap(f, source) {
+  if (source instanceof Map) {
+    return new Map(base.compose(f, source.f), source.source);
+  }
+
+  if (source instanceof _Filter2.default) {
+    return new _FilterMap2.default(source.p, f, source.source);
+  }
+
+  return new Map(f, source);
+};
+
+Map.prototype.run = function (sink, scheduler) {
+  // eslint-disable-line no-extend-native
+  return this.source.run(new MapSink(this.f, sink), scheduler);
+};
+
+function MapSink(f, sink) {
+  this.f = f;
+  this.sink = sink;
+}
+
+MapSink.prototype.end = _Pipe2.default.prototype.end;
+MapSink.prototype.error = _Pipe2.default.prototype.error;
+
+MapSink.prototype.event = function (t, x) {
+  var f = this.f;
+  this.sink.event(t, f(x));
+};
+},{"../sink/Pipe":466,"./Filter":448,"./FilterMap":449,"@most/prelude":490}],451:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.PropagateTask = exports.defaultScheduler = exports.multicast = exports.throwError = exports.flatMapError = exports.recoverWith = exports.await = exports.awaitPromises = exports.fromPromise = exports.debounce = exports.throttle = exports.timestamp = exports.delay = exports.during = exports.since = exports.skipUntil = exports.until = exports.takeUntil = exports.skipAfter = exports.skipWhile = exports.takeWhile = exports.slice = exports.skip = exports.take = exports.distinctBy = exports.skipRepeatsWith = exports.distinct = exports.skipRepeats = exports.filter = exports.switch = exports.switchLatest = exports.zipArray = exports.zip = exports.sampleWith = exports.sampleArray = exports.sample = exports.combineArray = exports.combine = exports.mergeArray = exports.merge = exports.mergeConcurrently = exports.concatMap = exports.flatMapEnd = exports.continueWith = exports.join = exports.chain = exports.flatMap = exports.transduce = exports.ap = exports.tap = exports.constant = exports.map = exports.startWith = exports.concat = exports.generate = exports.iterate = exports.unfold = exports.reduce = exports.scan = exports.loop = exports.drain = exports.forEach = exports.observe = exports.fromEvent = exports.periodic = exports.from = exports.never = exports.empty = exports.just = exports.of = exports.Stream = undefined;
+
+var _fromEvent = require('./source/fromEvent');
+
+Object.defineProperty(exports, 'fromEvent', {
+  enumerable: true,
+  get: function () {
+    return _fromEvent.fromEvent;
+  }
+});
+
+var _unfold = require('./source/unfold');
+
+Object.defineProperty(exports, 'unfold', {
+  enumerable: true,
+  get: function () {
+    return _unfold.unfold;
+  }
+});
+
+var _iterate = require('./source/iterate');
+
+Object.defineProperty(exports, 'iterate', {
+  enumerable: true,
+  get: function () {
+    return _iterate.iterate;
+  }
+});
+
+var _generate = require('./source/generate');
+
+Object.defineProperty(exports, 'generate', {
+  enumerable: true,
+  get: function () {
+    return _generate.generate;
+  }
+});
+
+var _Stream = require('./Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+var _core = require('./source/core');
+
+var _from = require('./source/from');
+
+var _periodic = require('./source/periodic');
+
+var _symbolObservable = require('symbol-observable');
+
+var _symbolObservable2 = _interopRequireDefault(_symbolObservable);
+
+var _subscribe = require('./observable/subscribe');
+
+var _thru = require('./combinator/thru');
+
+var _observe = require('./combinator/observe');
+
+var _loop = require('./combinator/loop');
+
+var _accumulate = require('./combinator/accumulate');
+
+var _build = require('./combinator/build');
+
+var _transform = require('./combinator/transform');
+
+var _applicative = require('./combinator/applicative');
+
+var _transduce = require('./combinator/transduce');
+
+var _flatMap = require('./combinator/flatMap');
+
+var _continueWith = require('./combinator/continueWith');
+
+var _concatMap = require('./combinator/concatMap');
+
+var _mergeConcurrently = require('./combinator/mergeConcurrently');
+
+var _merge = require('./combinator/merge');
+
+var _combine = require('./combinator/combine');
+
+var _sample = require('./combinator/sample');
+
+var _zip = require('./combinator/zip');
+
+var _switch = require('./combinator/switch');
+
+var _filter = require('./combinator/filter');
+
+var _slice = require('./combinator/slice');
+
+var _timeslice = require('./combinator/timeslice');
+
+var _delay = require('./combinator/delay');
+
+var _timestamp = require('./combinator/timestamp');
+
+var _limit = require('./combinator/limit');
+
+var _promises = require('./combinator/promises');
+
+var _errors = require('./combinator/errors');
+
+var _multicast = require('@most/multicast');
+
+var _multicast2 = _interopRequireDefault(_multicast);
+
+var _defaultScheduler = require('./scheduler/defaultScheduler');
+
+var _defaultScheduler2 = _interopRequireDefault(_defaultScheduler);
+
+var _PropagateTask = require('./scheduler/PropagateTask');
+
+var _PropagateTask2 = _interopRequireDefault(_PropagateTask);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Core stream type
+ * @type {Stream}
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+/* eslint import/first: 0 */
+
+exports.Stream = _Stream2.default;
+
+// Add of and empty to constructor for fantasy-land compat
+
+_Stream2.default.of = _core.of;
+_Stream2.default.empty = _core.empty;
+// Add from to constructor for ES Observable compat
+_Stream2.default.from = _from.from;
+exports.of = _core.of;
+exports.just = _core.of;
+exports.empty = _core.empty;
+exports.never = _core.never;
+exports.from = _from.from;
+exports.periodic = _periodic.periodic;
+
+// -----------------------------------------------------------------------
+// Draft ES Observable proposal interop
+// https://github.com/zenparsing/es-observable
+
+_Stream2.default.prototype.subscribe = function (subscriber) {
+  return (0, _subscribe.subscribe)(subscriber, this);
+};
+
+_Stream2.default.prototype[_symbolObservable2.default] = function () {
+  return this;
+};
+
+// -----------------------------------------------------------------------
+// Fluent adapter
+
+/**
+ * Adapt a functional stream transform to fluent style.
+ * It applies f to the this stream object
+ * @param  {function(s: Stream): Stream} f function that
+ * receives the stream itself and must return a new stream
+ * @return {Stream}
+ */
+_Stream2.default.prototype.thru = function (f) {
+  return (0, _thru.thru)(f, this);
+};
+
+// -----------------------------------------------------------------------
+// Adapting other sources
+
+/**
+ * Create a stream of events from the supplied EventTarget or EventEmitter
+ * @param {String} event event name
+ * @param {EventTarget|EventEmitter} source EventTarget or EventEmitter. The source
+ *  must support either addEventListener/removeEventListener (w3c EventTarget:
+ *  http://www.w3.org/TR/DOM-Level-2-Events/events.html#Events-EventTarget),
+ *  or addListener/removeListener (node EventEmitter: http://nodejs.org/api/events.html)
+ * @returns {Stream} stream of events of the specified type from the source
+ */
+
+
+// -----------------------------------------------------------------------
+// Observing
+
+exports.observe = _observe.observe;
+exports.forEach = _observe.observe;
+exports.drain = _observe.drain;
+
+/**
+ * Process all the events in the stream
+ * @returns {Promise} promise that fulfills when the stream ends, or rejects
+ *  if the stream fails with an unhandled error.
+ */
+
+_Stream2.default.prototype.observe = _Stream2.default.prototype.forEach = function (f) {
+  return (0, _observe.observe)(f, this);
+};
+
+/**
+ * Consume all events in the stream, without providing a function to process each.
+ * This causes a stream to become active and begin emitting events, and is useful
+ * in cases where all processing has been setup upstream via other combinators, and
+ * there is no need to process the terminal events.
+ * @returns {Promise} promise that fulfills when the stream ends, or rejects
+ *  if the stream fails with an unhandled error.
+ */
+_Stream2.default.prototype.drain = function () {
+  return (0, _observe.drain)(this);
+};
+
+// -------------------------------------------------------
+
+exports.loop = _loop.loop;
+
+/**
+ * Generalized feedback loop. Call a stepper function for each event. The stepper
+ * will be called with 2 params: the current seed and the an event value.  It must
+ * return a new { seed, value } pair. The `seed` will be fed back into the next
+ * invocation of stepper, and the `value` will be propagated as the event value.
+ * @param {function(seed:*, value:*):{seed:*, value:*}} stepper loop step function
+ * @param {*} seed initial seed value passed to first stepper call
+ * @returns {Stream} new stream whose values are the `value` field of the objects
+ * returned by the stepper
+ */
+
+_Stream2.default.prototype.loop = function (stepper, seed) {
+  return (0, _loop.loop)(stepper, seed, this);
+};
+
+// -------------------------------------------------------
+
+exports.scan = _accumulate.scan;
+exports.reduce = _accumulate.reduce;
+
+/**
+ * Create a stream containing successive reduce results of applying f to
+ * the previous reduce result and the current stream item.
+ * @param {function(result:*, x:*):*} f reducer function
+ * @param {*} initial initial value
+ * @returns {Stream} new stream containing successive reduce results
+ */
+
+_Stream2.default.prototype.scan = function (f, initial) {
+  return (0, _accumulate.scan)(f, initial, this);
+};
+
+/**
+ * Reduce the stream to produce a single result.  Note that reducing an infinite
+ * stream will return a Promise that never fulfills, but that may reject if an error
+ * occurs.
+ * @param {function(result:*, x:*):*} f reducer function
+ * @param {*} initial optional initial value
+ * @returns {Promise} promise for the file result of the reduce
+ */
+_Stream2.default.prototype.reduce = function (f, initial) {
+  return (0, _accumulate.reduce)(f, initial, this);
+};
+
+// -----------------------------------------------------------------------
+// Building and extending
+
+exports.concat = _build.concat;
+exports.startWith = _build.cons;
+
+/**
+ * @param {Stream} tail
+ * @returns {Stream} new stream containing all items in this followed by
+ *  all items in tail
+ */
+
+_Stream2.default.prototype.concat = function (tail) {
+  return (0, _build.concat)(this, tail);
+};
+
+/**
+ * @param {*} x value to prepend
+ * @returns {Stream} a new stream with x prepended
+ */
+_Stream2.default.prototype.startWith = function (x) {
+  return (0, _build.cons)(x, this);
+};
+
+// -----------------------------------------------------------------------
+// Transforming
+
+exports.map = _transform.map;
+exports.constant = _transform.constant;
+exports.tap = _transform.tap;
+exports.ap = _applicative.ap;
+
+/**
+ * Transform each value in the stream by applying f to each
+ * @param {function(*):*} f mapping function
+ * @returns {Stream} stream containing items transformed by f
+ */
+
+_Stream2.default.prototype.map = function (f) {
+  return (0, _transform.map)(f, this);
+};
+
+/**
+ * Assume this stream contains functions, and apply each function to each item
+ * in the provided stream.  This generates, in effect, a cross product.
+ * @param {Stream} xs stream of items to which
+ * @returns {Stream} stream containing the cross product of items
+ */
+_Stream2.default.prototype.ap = function (xs) {
+  return (0, _applicative.ap)(this, xs);
+};
+
+/**
+ * Replace each value in the stream with x
+ * @param {*} x
+ * @returns {Stream} stream containing items replaced with x
+ */
+_Stream2.default.prototype.constant = function (x) {
+  return (0, _transform.constant)(x, this);
+};
+
+/**
+ * Perform a side effect for each item in the stream
+ * @param {function(x:*):*} f side effect to execute for each item. The
+ *  return value will be discarded.
+ * @returns {Stream} new stream containing the same items as this stream
+ */
+_Stream2.default.prototype.tap = function (f) {
+  return (0, _transform.tap)(f, this);
+};
+
+// -----------------------------------------------------------------------
+// Transducer support
+
+exports.transduce = _transduce.transduce;
+
+/**
+ * Transform this stream by passing its events through a transducer.
+ * @param  {function} transducer transducer function
+ * @return {Stream} stream of events transformed by the transducer
+ */
+
+_Stream2.default.prototype.transduce = function (transducer) {
+  return (0, _transduce.transduce)(transducer, this);
+};
+
+// -----------------------------------------------------------------------
+// FlatMapping
+
+// @deprecated flatMap, use chain instead
+exports.flatMap = _flatMap.flatMap;
+exports.chain = _flatMap.flatMap;
+exports.join = _flatMap.join;
+
+/**
+ * Map each value in the stream to a new stream, and merge it into the
+ * returned outer stream. Event arrival times are preserved.
+ * @param {function(x:*):Stream} f chaining function, must return a Stream
+ * @returns {Stream} new stream containing all events from each stream returned by f
+ */
+
+_Stream2.default.prototype.chain = function (f) {
+  return (0, _flatMap.flatMap)(f, this);
+};
+
+// @deprecated use chain instead
+_Stream2.default.prototype.flatMap = _Stream2.default.prototype.chain;
+
+/**
+* Monadic join. Flatten a Stream<Stream<X>> to Stream<X> by merging inner
+* streams to the outer. Event arrival times are preserved.
+* @returns {Stream<X>} new stream containing all events of all inner streams
+*/
+_Stream2.default.prototype.join = function () {
+  return (0, _flatMap.join)(this);
+};
+
+// @deprecated flatMapEnd, use continueWith instead
+exports.continueWith = _continueWith.continueWith;
+exports.flatMapEnd = _continueWith.continueWith;
+
+/**
+ * Map the end event to a new stream, and begin emitting its values.
+ * @param {function(x:*):Stream} f function that receives the end event value,
+ * and *must* return a new Stream to continue with.
+ * @returns {Stream} new stream that emits all events from the original stream,
+ * followed by all events from the stream returned by f.
+ */
+
+_Stream2.default.prototype.continueWith = function (f) {
+  return (0, _continueWith.continueWith)(f, this);
+};
+
+// @deprecated use continueWith instead
+_Stream2.default.prototype.flatMapEnd = _Stream2.default.prototype.continueWith;
+
+exports.concatMap = _concatMap.concatMap;
+
+
+_Stream2.default.prototype.concatMap = function (f) {
+  return (0, _concatMap.concatMap)(f, this);
+};
+
+// -----------------------------------------------------------------------
+// Concurrent merging
+
+exports.mergeConcurrently = _mergeConcurrently.mergeConcurrently;
+
+/**
+ * Flatten a Stream<Stream<X>> to Stream<X> by merging inner
+ * streams to the outer, limiting the number of inner streams that may
+ * be active concurrently.
+ * @param {number} concurrency at most this many inner streams will be
+ *  allowed to be active concurrently.
+ * @return {Stream<X>} new stream containing all events of all inner
+ *  streams, with limited concurrency.
+ */
+
+_Stream2.default.prototype.mergeConcurrently = function (concurrency) {
+  return (0, _mergeConcurrently.mergeConcurrently)(concurrency, this);
+};
+
+// -----------------------------------------------------------------------
+// Merging
+
+exports.merge = _merge.merge;
+exports.mergeArray = _merge.mergeArray;
+
+/**
+ * Merge this stream and all the provided streams
+ * @returns {Stream} stream containing items from this stream and s in time
+ * order.  If two events are simultaneous they will be merged in
+ * arbitrary order.
+ */
+
+_Stream2.default.prototype.merge = function () /* ...streams */{
+  return (0, _merge.mergeArray)(base.cons(this, arguments));
+};
+
+// -----------------------------------------------------------------------
+// Combining
+
+exports.combine = _combine.combine;
+exports.combineArray = _combine.combineArray;
+
+/**
+ * Combine latest events from all input streams
+ * @param {function(...events):*} f function to combine most recent events
+ * @returns {Stream} stream containing the result of applying f to the most recent
+ *  event of each input stream, whenever a new event arrives on any stream.
+ */
+
+_Stream2.default.prototype.combine = function (f /*, ...streams */) {
+  return (0, _combine.combineArray)(f, base.replace(this, 0, arguments));
+};
+
+// -----------------------------------------------------------------------
+// Sampling
+
+exports.sample = _sample.sample;
+exports.sampleArray = _sample.sampleArray;
+exports.sampleWith = _sample.sampleWith;
+
+/**
+ * When an event arrives on sampler, emit the latest event value from stream.
+ * @param {Stream} sampler stream of events at whose arrival time
+ *  signal's latest value will be propagated
+ * @returns {Stream} sampled stream of values
+ */
+
+_Stream2.default.prototype.sampleWith = function (sampler) {
+  return (0, _sample.sampleWith)(sampler, this);
+};
+
+/**
+ * When an event arrives on this stream, emit the result of calling f with the latest
+ * values of all streams being sampled
+ * @param {function(...values):*} f function to apply to each set of sampled values
+ * @returns {Stream} stream of sampled and transformed values
+ */
+_Stream2.default.prototype.sample = function (f /* ...streams */) {
+  return (0, _sample.sampleArray)(f, this, base.tail(arguments));
+};
+
+// -----------------------------------------------------------------------
+// Zipping
+
+exports.zip = _zip.zip;
+exports.zipArray = _zip.zipArray;
+
+/**
+ * Pair-wise combine items with those in s. Given 2 streams:
+ * [1,2,3] zipWith f [4,5,6] -> [f(1,4),f(2,5),f(3,6)]
+ * Note: zip causes fast streams to buffer and wait for slow streams.
+ * @param {function(a:Stream, b:Stream, ...):*} f function to combine items
+ * @returns {Stream} new stream containing pairs
+ */
+
+_Stream2.default.prototype.zip = function (f /*, ...streams */) {
+  return (0, _zip.zipArray)(f, base.replace(this, 0, arguments));
+};
+
+// -----------------------------------------------------------------------
+// Switching
+
+// @deprecated switch, use switchLatest instead
+exports.switchLatest = _switch.switchLatest;
+exports.switch = _switch.switchLatest;
+
+/**
+ * Given a stream of streams, return a new stream that adopts the behavior
+ * of the most recent inner stream.
+ * @returns {Stream} switching stream
+ */
+
+_Stream2.default.prototype.switchLatest = function () {
+  return (0, _switch.switchLatest)(this);
+};
+
+// @deprecated use switchLatest instead
+_Stream2.default.prototype.switch = _Stream2.default.prototype.switchLatest;
+
+// -----------------------------------------------------------------------
+// Filtering
+
+// @deprecated distinct, use skipRepeats instead
+// @deprecated distinctBy, use skipRepeatsWith instead
+exports.filter = _filter.filter;
+exports.skipRepeats = _filter.skipRepeats;
+exports.distinct = _filter.skipRepeats;
+exports.skipRepeatsWith = _filter.skipRepeatsWith;
+exports.distinctBy = _filter.skipRepeatsWith;
+
+/**
+ * Retain only items matching a predicate
+ * stream:                           -12345678-
+ * filter(x => x % 2 === 0, stream): --2-4-6-8-
+ * @param {function(x:*):boolean} p filtering predicate called for each item
+ * @returns {Stream} stream containing only items for which predicate returns truthy
+ */
+
+_Stream2.default.prototype.filter = function (p) {
+  return (0, _filter.filter)(p, this);
+};
+
+/**
+ * Skip repeated events, using === to compare items
+ * stream:           -abbcd-
+ * distinct(stream): -ab-cd-
+ * @returns {Stream} stream with no repeated events
+ */
+_Stream2.default.prototype.skipRepeats = function () {
+  return (0, _filter.skipRepeats)(this);
+};
+
+/**
+ * Skip repeated events, using supplied equals function to compare items
+ * @param {function(a:*, b:*):boolean} equals function to compare items
+ * @returns {Stream} stream with no repeated events
+ */
+_Stream2.default.prototype.skipRepeatsWith = function (equals) {
+  return (0, _filter.skipRepeatsWith)(equals, this);
+};
+
+// -----------------------------------------------------------------------
+// Slicing
+
+exports.take = _slice.take;
+exports.skip = _slice.skip;
+exports.slice = _slice.slice;
+exports.takeWhile = _slice.takeWhile;
+exports.skipWhile = _slice.skipWhile;
+exports.skipAfter = _slice.skipAfter;
+
+/**
+ * stream:          -abcd-
+ * take(2, stream): -ab|
+ * @param {Number} n take up to this many events
+ * @returns {Stream} stream containing at most the first n items from this stream
+ */
+
+_Stream2.default.prototype.take = function (n) {
+  return (0, _slice.take)(n, this);
+};
+
+/**
+ * stream:          -abcd->
+ * skip(2, stream): ---cd->
+ * @param {Number} n skip this many events
+ * @returns {Stream} stream not containing the first n events
+ */
+_Stream2.default.prototype.skip = function (n) {
+  return (0, _slice.skip)(n, this);
+};
+
+/**
+ * Slice a stream by event index. Equivalent to, but more efficient than
+ * stream.take(end).skip(start);
+ * NOTE: Negative start and end are not supported
+ * @param {Number} start skip all events before the start index
+ * @param {Number} end allow all events from the start index to the end index
+ * @returns {Stream} stream containing items where start <= index < end
+ */
+_Stream2.default.prototype.slice = function (start, end) {
+  return (0, _slice.slice)(start, end, this);
+};
+
+/**
+ * stream:                        -123451234->
+ * takeWhile(x => x < 5, stream): -1234|
+ * @param {function(x:*):boolean} p predicate
+ * @returns {Stream} stream containing items up to, but not including, the
+ * first item for which p returns falsy.
+ */
+_Stream2.default.prototype.takeWhile = function (p) {
+  return (0, _slice.takeWhile)(p, this);
+};
+
+/**
+ * stream:                        -123451234->
+ * skipWhile(x => x < 5, stream): -----51234->
+ * @param {function(x:*):boolean} p predicate
+ * @returns {Stream} stream containing items following *and including* the
+ * first item for which p returns falsy.
+ */
+_Stream2.default.prototype.skipWhile = function (p) {
+  return (0, _slice.skipWhile)(p, this);
+};
+
+/**
+ * stream:                         -123456789->
+ * skipAfter(x => x === 5, stream):-12345|
+ * @param {function(x:*):boolean} p predicate
+ * @returns {Stream} stream containing items up to, *and including*, the
+ * first item for which p returns truthy.
+ */
+_Stream2.default.prototype.skipAfter = function (p) {
+  return (0, _slice.skipAfter)(p, this);
+};
+
+// -----------------------------------------------------------------------
+// Time slicing
+
+// @deprecated takeUntil, use until instead
+// @deprecated skipUntil, use since instead
+exports.takeUntil = _timeslice.takeUntil;
+exports.until = _timeslice.takeUntil;
+exports.skipUntil = _timeslice.skipUntil;
+exports.since = _timeslice.skipUntil;
+exports.during = _timeslice.during;
+
+/**
+ * stream:                    -a-b-c-d-e-f-g->
+ * signal:                    -------x
+ * takeUntil(signal, stream): -a-b-c-|
+ * @param {Stream} signal retain only events in stream before the first
+ * event in signal
+ * @returns {Stream} new stream containing only events that occur before
+ * the first event in signal.
+ */
+
+_Stream2.default.prototype.until = function (signal) {
+  return (0, _timeslice.takeUntil)(signal, this);
+};
+
+// @deprecated use until instead
+_Stream2.default.prototype.takeUntil = _Stream2.default.prototype.until;
+
+/**
+* stream:                    -a-b-c-d-e-f-g->
+* signal:                    -------x
+* takeUntil(signal, stream): -------d-e-f-g->
+* @param {Stream} signal retain only events in stream at or after the first
+* event in signal
+* @returns {Stream} new stream containing only events that occur after
+* the first event in signal.
+*/
+_Stream2.default.prototype.since = function (signal) {
+  return (0, _timeslice.skipUntil)(signal, this);
+};
+
+// @deprecated use since instead
+_Stream2.default.prototype.skipUntil = _Stream2.default.prototype.since;
+
+/**
+* stream:                    -a-b-c-d-e-f-g->
+* timeWindow:                -----s
+* s:                               -----t
+* stream.during(timeWindow): -----c-d-e-|
+* @param {Stream<Stream>} timeWindow a stream whose first event (s) represents
+*  the window start time.  That event (s) is itself a stream whose first event (t)
+*  represents the window end time
+* @returns {Stream} new stream containing only events within the provided timespan
+*/
+_Stream2.default.prototype.during = function (timeWindow) {
+  return (0, _timeslice.during)(timeWindow, this);
+};
+
+// -----------------------------------------------------------------------
+// Delaying
+
+exports.delay = _delay.delay;
+
+/**
+ * @param {Number} delayTime milliseconds to delay each item
+ * @returns {Stream} new stream containing the same items, but delayed by ms
+ */
+
+_Stream2.default.prototype.delay = function (delayTime) {
+  return (0, _delay.delay)(delayTime, this);
+};
+
+// -----------------------------------------------------------------------
+// Getting event timestamp
+
+exports.timestamp = _timestamp.timestamp;
+
+/**
+ * Expose event timestamps into the stream. Turns a Stream<X> into
+ * Stream<{time:t, value:X}>
+ * @returns {Stream<{time:number, value:*}>}
+ */
+
+_Stream2.default.prototype.timestamp = function () {
+  return (0, _timestamp.timestamp)(this);
+};
+
+// -----------------------------------------------------------------------
+// Rate limiting
+
+exports.throttle = _limit.throttle;
+exports.debounce = _limit.debounce;
+
+/**
+ * Limit the rate of events
+ * stream:              abcd----abcd----
+ * throttle(2, stream): a-c-----a-c-----
+ * @param {Number} period time to suppress events
+ * @returns {Stream} new stream that skips events for throttle period
+ */
+
+_Stream2.default.prototype.throttle = function (period) {
+  return (0, _limit.throttle)(period, this);
+};
+
+/**
+ * Wait for a burst of events to subside and emit only the last event in the burst
+ * stream:              abcd----abcd----
+ * debounce(2, stream): -----d-------d--
+ * @param {Number} period events occuring more frequently than this
+ *  on the provided scheduler will be suppressed
+ * @returns {Stream} new debounced stream
+ */
+_Stream2.default.prototype.debounce = function (period) {
+  return (0, _limit.debounce)(period, this);
+};
+
+// -----------------------------------------------------------------------
+// Awaiting Promises
+
+// @deprecated await, use awaitPromises instead
+exports.fromPromise = _promises.fromPromise;
+exports.awaitPromises = _promises.awaitPromises;
+exports.await = _promises.awaitPromises;
+
+/**
+ * Await promises, turning a Stream<Promise<X>> into Stream<X>.  Preserves
+ * event order, but timeshifts events based on promise resolution time.
+ * @returns {Stream<X>} stream containing non-promise values
+ */
+
+_Stream2.default.prototype.awaitPromises = function () {
+  return (0, _promises.awaitPromises)(this);
+};
+
+// @deprecated use awaitPromises instead
+_Stream2.default.prototype.await = _Stream2.default.prototype.awaitPromises;
+
+// -----------------------------------------------------------------------
+// Error handling
+
+// @deprecated flatMapError, use recoverWith instead
+exports.recoverWith = _errors.recoverWith;
+exports.flatMapError = _errors.flatMapError;
+exports.throwError = _errors.throwError;
+
+/**
+ * If this stream encounters an error, recover and continue with items from stream
+ * returned by f.
+ * stream:                  -a-b-c-X-
+ * f(X):                           d-e-f-g-
+ * flatMapError(f, stream): -a-b-c-d-e-f-g-
+ * @param {function(error:*):Stream} f function which returns a new stream
+ * @returns {Stream} new stream which will recover from an error by calling f
+ */
+
+_Stream2.default.prototype.recoverWith = function (f) {
+  return (0, _errors.flatMapError)(f, this);
+};
+
+// @deprecated use recoverWith instead
+_Stream2.default.prototype.flatMapError = _Stream2.default.prototype.recoverWith;
+
+// -----------------------------------------------------------------------
+// Multicasting
+
+exports.multicast = _multicast2.default;
+
+/**
+ * Transform the stream into multicast stream.  That means that many subscribers
+ * to the stream will not cause multiple invocations of the internal machinery.
+ * @returns {Stream} new stream which will multicast events to all observers.
+ */
+
+_Stream2.default.prototype.multicast = function () {
+  return (0, _multicast2.default)(this);
+};
+
+// export the instance of the defaultScheduler for third-party libraries
+exports.defaultScheduler = _defaultScheduler2.default;
+
+// export an implementation of Task used internally for third-party libraries
+
+exports.PropagateTask = _PropagateTask2.default;
+},{"./Stream":418,"./combinator/accumulate":419,"./combinator/applicative":420,"./combinator/build":421,"./combinator/combine":422,"./combinator/concatMap":423,"./combinator/continueWith":424,"./combinator/delay":425,"./combinator/errors":426,"./combinator/filter":427,"./combinator/flatMap":428,"./combinator/limit":429,"./combinator/loop":430,"./combinator/merge":431,"./combinator/mergeConcurrently":432,"./combinator/observe":433,"./combinator/promises":434,"./combinator/sample":435,"./combinator/slice":436,"./combinator/switch":437,"./combinator/thru":438,"./combinator/timeslice":439,"./combinator/timestamp":440,"./combinator/transduce":441,"./combinator/transform":442,"./combinator/zip":443,"./observable/subscribe":456,"./scheduler/PropagateTask":459,"./scheduler/defaultScheduler":463,"./source/core":470,"./source/from":471,"./source/fromEvent":473,"./source/generate":475,"./source/iterate":476,"./source/periodic":477,"./source/unfold":479,"@most/multicast":489,"@most/prelude":490,"symbol-observable":481}],452:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = invoke;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function invoke(f, args) {
+  /* eslint complexity: [2,7] */
+  switch (args.length) {
+    case 0:
+      return f();
+    case 1:
+      return f(args[0]);
+    case 2:
+      return f(args[0], args[1]);
+    case 3:
+      return f(args[0], args[1], args[2]);
+    case 4:
+      return f(args[0], args[1], args[2], args[3]);
+    case 5:
+      return f(args[0], args[1], args[2], args[3], args[4]);
+    default:
+      return f.apply(void 0, args);
+  }
+}
+},{}],453:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.isIterable = isIterable;
+exports.getIterator = getIterator;
+exports.makeIterable = makeIterable;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+/* global Set, Symbol */
+var iteratorSymbol;
+// Firefox ships a partial implementation using the name @@iterator.
+// https://bugzilla.mozilla.org/show_bug.cgi?id=907077#c14
+if (typeof Set === 'function' && typeof new Set()['@@iterator'] === 'function') {
+  iteratorSymbol = '@@iterator';
+} else {
+  iteratorSymbol = typeof Symbol === 'function' ? Symbol.iterator : '_es6shim_iterator_';
+}
+
+function isIterable(o) {
+  return typeof o[iteratorSymbol] === 'function';
+}
+
+function getIterator(o) {
+  return o[iteratorSymbol]();
+}
+
+function makeIterable(f, o) {
+  o[iteratorSymbol] = f;
+  return o;
+}
+},{}],454:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.fromObservable = fromObservable;
+exports.ObservableSource = ObservableSource;
+exports.SubscriberSink = SubscriberSink;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _tryEvent = require('../source/tryEvent');
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function fromObservable(observable) {
+  return new _Stream2.default(new ObservableSource(observable));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function ObservableSource(observable) {
+  this.observable = observable;
+}
+
+ObservableSource.prototype.run = function (sink, scheduler) {
+  var sub = this.observable.subscribe(new SubscriberSink(sink, scheduler));
+  if (typeof sub === 'function') {
+    return dispose.create(sub);
+  } else if (sub && typeof sub.unsubscribe === 'function') {
+    return dispose.create(unsubscribe, sub);
+  }
+
+  throw new TypeError('Observable returned invalid subscription ' + String(sub));
+};
+
+function SubscriberSink(sink, scheduler) {
+  this.sink = sink;
+  this.scheduler = scheduler;
+}
+
+SubscriberSink.prototype.next = function (x) {
+  (0, _tryEvent.tryEvent)(this.scheduler.now(), x, this.sink);
+};
+
+SubscriberSink.prototype.complete = function (x) {
+  (0, _tryEvent.tryEnd)(this.scheduler.now(), x, this.sink);
+};
+
+SubscriberSink.prototype.error = function (e) {
+  this.sink.error(this.scheduler.now(), e);
+};
+
+function unsubscribe(subscription) {
+  return subscription.unsubscribe();
+}
+},{"../Stream":418,"../disposable/dispose":446,"../source/tryEvent":478}],455:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = getObservable;
+
+var _symbolObservable = require('symbol-observable');
+
+var _symbolObservable2 = _interopRequireDefault(_symbolObservable);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function getObservable(o) {
+  // eslint-disable-line complexity
+  var obs = null;
+  if (o) {
+    // Access foreign method only once
+    var method = o[_symbolObservable2.default];
+    if (typeof method === 'function') {
+      obs = method.call(o);
+      if (!(obs && typeof obs.subscribe === 'function')) {
+        throw new TypeError('invalid observable ' + obs);
+      }
+    }
+  }
+
+  return obs;
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+},{"symbol-observable":481}],456:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.subscribe = subscribe;
+exports.SubscribeObserver = SubscribeObserver;
+exports.Subscription = Subscription;
+
+var _defaultScheduler = require('../scheduler/defaultScheduler');
+
+var _defaultScheduler2 = _interopRequireDefault(_defaultScheduler);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _fatalError = require('../fatalError');
+
+var _fatalError2 = _interopRequireDefault(_fatalError);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function subscribe(subscriber, stream) {
+  if (Object(subscriber) !== subscriber) {
+    throw new TypeError('subscriber must be an object');
+  }
+
+  var disposable = dispose.settable();
+  var observer = new SubscribeObserver(_fatalError2.default, subscriber, disposable);
+
+  disposable.setDisposable(stream.source.run(observer, _defaultScheduler2.default));
+
+  return new Subscription(disposable);
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function SubscribeObserver(fatalError, subscriber, disposable) {
+  this.fatalError = fatalError;
+  this.subscriber = subscriber;
+  this.disposable = disposable;
+}
+
+SubscribeObserver.prototype.event = function (t, x) {
+  if (!this.disposable.disposed && typeof this.subscriber.next === 'function') {
+    this.subscriber.next(x);
+  }
+};
+
+SubscribeObserver.prototype.end = function (t, x) {
+  if (!this.disposable.disposed) {
+    var s = this.subscriber;
+    var fatalError = this.fatalError;
+    Promise.resolve(this.disposable.dispose()).then(function () {
+      if (typeof s.complete === 'function') {
+        s.complete(x);
+      }
+    }).catch(function (e) {
+      throwError(e, s, fatalError);
+    });
+  }
+};
+
+SubscribeObserver.prototype.error = function (t, e) {
+  var s = this.subscriber;
+  var fatalError = this.fatalError;
+  Promise.resolve(this.disposable.dispose()).then(function () {
+    throwError(e, s, fatalError);
+  });
+};
+
+function Subscription(disposable) {
+  this.disposable = disposable;
+}
+
+Subscription.prototype.unsubscribe = function () {
+  this.disposable.dispose();
+};
+
+function throwError(e1, subscriber, throwError) {
+  if (typeof subscriber.error === 'function') {
+    try {
+      subscriber.error(e1);
+    } catch (e2) {
+      throwError(e2);
+    }
+  } else {
+    throwError(e1);
+  }
+}
+},{"../disposable/dispose":446,"../fatalError":447,"../scheduler/defaultScheduler":463}],457:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.withDefaultScheduler = withDefaultScheduler;
+exports.withScheduler = withScheduler;
+
+var _dispose = require('./disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _defaultScheduler = require('./scheduler/defaultScheduler');
+
+var _defaultScheduler2 = _interopRequireDefault(_defaultScheduler);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function withDefaultScheduler(source) {
+  return withScheduler(source, _defaultScheduler2.default);
+}
+
+function withScheduler(source, scheduler) {
+  return new Promise(function (resolve, reject) {
+    runSource(source, scheduler, resolve, reject);
+  });
+}
+
+function runSource(source, scheduler, resolve, reject) {
+  var disposable = dispose.settable();
+  var observer = new Drain(resolve, reject, disposable);
+
+  disposable.setDisposable(source.run(observer, scheduler));
+}
+
+function Drain(end, error, disposable) {
+  this._end = end;
+  this._error = error;
+  this._disposable = disposable;
+  this.active = true;
+}
+
+Drain.prototype.event = function (t, x) {};
+
+Drain.prototype.end = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+  this.active = false;
+  disposeThen(this._end, this._error, this._disposable, x);
+};
+
+Drain.prototype.error = function (t, e) {
+  this.active = false;
+  disposeThen(this._error, this._error, this._disposable, e);
+};
+
+function disposeThen(end, error, disposable, x) {
+  Promise.resolve(disposable.dispose()).then(function () {
+    end(x);
+  }, error);
+}
+},{"./disposable/dispose":446,"./scheduler/defaultScheduler":463}],458:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = ClockTimer;
+
+var _task = require('../task');
+
+/* global setTimeout, clearTimeout */
+
+function ClockTimer() {} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+ClockTimer.prototype.now = Date.now;
+
+ClockTimer.prototype.setTimer = function (f, dt) {
+  return dt <= 0 ? runAsap(f) : setTimeout(f, dt);
+};
+
+ClockTimer.prototype.clearTimer = function (t) {
+  return t instanceof Asap ? t.cancel() : clearTimeout(t);
+};
+
+function Asap(f) {
+  this.f = f;
+  this.active = true;
+}
+
+Asap.prototype.run = function () {
+  return this.active && this.f();
+};
+
+Asap.prototype.error = function (e) {
+  throw e;
+};
+
+Asap.prototype.cancel = function () {
+  this.active = false;
+};
+
+function runAsap(f) {
+  var task = new Asap(f);
+  (0, _task.defer)(task);
+  return task;
+}
+},{"../task":480}],459:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = PropagateTask;
+
+var _fatalError = require('../fatalError');
+
+var _fatalError2 = _interopRequireDefault(_fatalError);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function PropagateTask(run, value, sink) {
+  this._run = run;
+  this.value = value;
+  this.sink = sink;
+  this.active = true;
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+PropagateTask.event = function (value, sink) {
+  return new PropagateTask(emit, value, sink);
+};
+
+PropagateTask.end = function (value, sink) {
+  return new PropagateTask(end, value, sink);
+};
+
+PropagateTask.error = function (value, sink) {
+  return new PropagateTask(error, value, sink);
+};
+
+PropagateTask.prototype.dispose = function () {
+  this.active = false;
+};
+
+PropagateTask.prototype.run = function (t) {
+  if (!this.active) {
+    return;
+  }
+  this._run(t, this.value, this.sink);
+};
+
+PropagateTask.prototype.error = function (t, e) {
+  if (!this.active) {
+    return (0, _fatalError2.default)(e);
+  }
+  this.sink.error(t, e);
+};
+
+function error(t, e, sink) {
+  sink.error(t, e);
+}
+
+function emit(t, x, sink) {
+  sink.event(t, x);
+}
+
+function end(t, x, sink) {
+  sink.end(t, x);
+}
+},{"../fatalError":447}],460:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = ScheduledTask;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function ScheduledTask(delay, period, task, scheduler) {
+  this.time = delay;
+  this.period = period;
+  this.task = task;
+  this.scheduler = scheduler;
+  this.active = true;
+}
+
+ScheduledTask.prototype.run = function () {
+  return this.task.run(this.time);
+};
+
+ScheduledTask.prototype.error = function (e) {
+  return this.task.error(this.time, e);
+};
+
+ScheduledTask.prototype.dispose = function () {
+  this.scheduler.cancel(this);
+  return this.task.dispose();
+};
+},{}],461:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = Scheduler;
+
+var _ScheduledTask = require('./ScheduledTask');
+
+var _ScheduledTask2 = _interopRequireDefault(_ScheduledTask);
+
+var _task = require('../task');
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function Scheduler(timer, timeline) {
+  this.timer = timer;
+  this.timeline = timeline;
+
+  this._timer = null;
+  this._nextArrival = Infinity;
+
+  var self = this;
+  this._runReadyTasksBound = function () {
+    self._runReadyTasks(self.now());
+  };
+}
+
+Scheduler.prototype.now = function () {
+  return this.timer.now();
+};
+
+Scheduler.prototype.asap = function (task) {
+  return this.schedule(0, -1, task);
+};
+
+Scheduler.prototype.delay = function (delay, task) {
+  return this.schedule(delay, -1, task);
+};
+
+Scheduler.prototype.periodic = function (period, task) {
+  return this.schedule(0, period, task);
+};
+
+Scheduler.prototype.schedule = function (delay, period, task) {
+  var now = this.now();
+  var st = new _ScheduledTask2.default(now + Math.max(0, delay), period, task, this);
+
+  this.timeline.add(st);
+  this._scheduleNextRun(now);
+  return st;
+};
+
+Scheduler.prototype.cancel = function (task) {
+  task.active = false;
+  if (this.timeline.remove(task)) {
+    this._reschedule();
+  }
+};
+
+Scheduler.prototype.cancelAll = function (f) {
+  this.timeline.removeAll(f);
+  this._reschedule();
+};
+
+Scheduler.prototype._reschedule = function () {
+  if (this.timeline.isEmpty()) {
+    this._unschedule();
+  } else {
+    this._scheduleNextRun(this.now());
+  }
+};
+
+Scheduler.prototype._unschedule = function () {
+  this.timer.clearTimer(this._timer);
+  this._timer = null;
+};
+
+Scheduler.prototype._scheduleNextRun = function (now) {
+  // eslint-disable-line complexity
+  if (this.timeline.isEmpty()) {
+    return;
+  }
+
+  var nextArrival = this.timeline.nextArrival();
+
+  if (this._timer === null) {
+    this._scheduleNextArrival(nextArrival, now);
+  } else if (nextArrival < this._nextArrival) {
+    this._unschedule();
+    this._scheduleNextArrival(nextArrival, now);
+  }
+};
+
+Scheduler.prototype._scheduleNextArrival = function (nextArrival, now) {
+  this._nextArrival = nextArrival;
+  var delay = Math.max(0, nextArrival - now);
+  this._timer = this.timer.setTimer(this._runReadyTasksBound, delay);
+};
+
+Scheduler.prototype._runReadyTasks = function (now) {
+  this._timer = null;
+  this.timeline.runTasks(now, _task.runTask);
+  this._scheduleNextRun(this.now());
+};
+},{"../task":480,"./ScheduledTask":460}],462:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = Timeline;
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function Timeline() {
+  this.tasks = [];
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+Timeline.prototype.nextArrival = function () {
+  return this.isEmpty() ? Infinity : this.tasks[0].time;
+};
+
+Timeline.prototype.isEmpty = function () {
+  return this.tasks.length === 0;
+};
+
+Timeline.prototype.add = function (st) {
+  insertByTime(st, this.tasks);
+};
+
+Timeline.prototype.remove = function (st) {
+  var i = binarySearch(st.time, this.tasks);
+
+  if (i >= 0 && i < this.tasks.length) {
+    var at = base.findIndex(st, this.tasks[i].events);
+    if (at >= 0) {
+      this.tasks[i].events.splice(at, 1);
+      return true;
+    }
+  }
+
+  return false;
+};
+
+Timeline.prototype.removeAll = function (f) {
+  var this$1 = this;
+
+  for (var i = 0, l = this.tasks.length; i < l; ++i) {
+    removeAllFrom(f, this$1.tasks[i]);
+  }
+};
+
+Timeline.prototype.runTasks = function (t, runTask) {
+  var this$1 = this;
+
+  var tasks = this.tasks;
+  var l = tasks.length;
+  var i = 0;
+
+  while (i < l && tasks[i].time <= t) {
+    ++i;
+  }
+
+  this.tasks = tasks.slice(i);
+
+  // Run all ready tasks
+  for (var j = 0; j < i; ++j) {
+    this$1.tasks = runTasks(runTask, tasks[j], this$1.tasks);
+  }
+};
+
+function runTasks(runTask, timeslot, tasks) {
+  // eslint-disable-line complexity
+  var events = timeslot.events;
+  for (var i = 0; i < events.length; ++i) {
+    var task = events[i];
+
+    if (task.active) {
+      runTask(task);
+
+      // Reschedule periodic repeating tasks
+      // Check active again, since a task may have canceled itself
+      if (task.period >= 0 && task.active) {
+        task.time = task.time + task.period;
+        insertByTime(task, tasks);
+      }
+    }
+  }
+
+  return tasks;
+}
+
+function insertByTime(task, timeslots) {
+  // eslint-disable-line complexity
+  var l = timeslots.length;
+
+  if (l === 0) {
+    timeslots.push(newTimeslot(task.time, [task]));
+    return;
+  }
+
+  var i = binarySearch(task.time, timeslots);
+
+  if (i >= l) {
+    timeslots.push(newTimeslot(task.time, [task]));
+  } else if (task.time === timeslots[i].time) {
+    timeslots[i].events.push(task);
+  } else {
+    timeslots.splice(i, 0, newTimeslot(task.time, [task]));
+  }
+}
+
+function removeAllFrom(f, timeslot) {
+  timeslot.events = base.removeAll(f, timeslot.events);
+}
+
+function binarySearch(t, sortedArray) {
+  // eslint-disable-line complexity
+  var lo = 0;
+  var hi = sortedArray.length;
+  var mid, y;
+
+  while (lo < hi) {
+    mid = Math.floor((lo + hi) / 2);
+    y = sortedArray[mid];
+
+    if (t === y.time) {
+      return mid;
+    } else if (t < y.time) {
+      hi = mid;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return hi;
+}
+
+function newTimeslot(t, events) {
+  return { time: t, events: events };
+}
+},{"@most/prelude":490}],463:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+
+var _Scheduler = require('./Scheduler');
+
+var _Scheduler2 = _interopRequireDefault(_Scheduler);
+
+var _ClockTimer = require('./ClockTimer');
+
+var _ClockTimer2 = _interopRequireDefault(_ClockTimer);
+
+var _Timeline = require('./Timeline');
+
+var _Timeline2 = _interopRequireDefault(_Timeline);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+var defaultScheduler = new _Scheduler2.default(new _ClockTimer2.default(), new _Timeline2.default()); /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+exports.default = defaultScheduler;
+},{"./ClockTimer":458,"./Scheduler":461,"./Timeline":462}],464:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = DeferredSink;
+
+var _task = require('../task');
+
+function DeferredSink(sink) {
+  this.sink = sink;
+  this.events = [];
+  this.active = true;
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+DeferredSink.prototype.event = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+
+  if (this.events.length === 0) {
+    (0, _task.defer)(new PropagateAllTask(this.sink, t, this.events));
+  }
+
+  this.events.push({ time: t, value: x });
+};
+
+DeferredSink.prototype.end = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+
+  this._end(new EndTask(t, x, this.sink));
+};
+
+DeferredSink.prototype.error = function (t, e) {
+  this._end(new ErrorTask(t, e, this.sink));
+};
+
+DeferredSink.prototype._end = function (task) {
+  this.active = false;
+  (0, _task.defer)(task);
+};
+
+function PropagateAllTask(sink, time, events) {
+  this.sink = sink;
+  this.events = events;
+  this.time = time;
+}
+
+PropagateAllTask.prototype.run = function () {
+  var this$1 = this;
+
+  var events = this.events;
+  var sink = this.sink;
+  var event;
+
+  for (var i = 0, l = events.length; i < l; ++i) {
+    event = events[i];
+    this$1.time = event.time;
+    sink.event(event.time, event.value);
+  }
+
+  events.length = 0;
+};
+
+PropagateAllTask.prototype.error = function (e) {
+  this.sink.error(this.time, e);
+};
+
+function EndTask(t, x, sink) {
+  this.time = t;
+  this.value = x;
+  this.sink = sink;
+}
+
+EndTask.prototype.run = function () {
+  this.sink.end(this.time, this.value);
+};
+
+EndTask.prototype.error = function (e) {
+  this.sink.error(this.time, e);
+};
+
+function ErrorTask(t, e, sink) {
+  this.time = t;
+  this.value = e;
+  this.sink = sink;
+}
+
+ErrorTask.prototype.run = function () {
+  this.sink.error(this.time, this.value);
+};
+
+ErrorTask.prototype.error = function (e) {
+  throw e;
+};
+},{"../task":480}],465:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = IndexSink;
+
+var _Pipe = require('./Pipe');
+
+var _Pipe2 = _interopRequireDefault(_Pipe);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function IndexSink(i, sink) {
+  this.sink = sink;
+  this.index = i;
+  this.active = true;
+  this.value = void 0;
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+IndexSink.prototype.event = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+  this.value = x;
+  this.sink.event(t, this);
+};
+
+IndexSink.prototype.end = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+  this.active = false;
+  this.sink.end(t, { index: this.index, value: x });
+};
+
+IndexSink.prototype.error = _Pipe2.default.prototype.error;
+},{"./Pipe":466}],466:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = Pipe;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+/**
+ * A sink mixin that simply forwards event, end, and error to
+ * another sink.
+ * @param sink
+ * @constructor
+ */
+function Pipe(sink) {
+  this.sink = sink;
+}
+
+Pipe.prototype.event = function (t, x) {
+  return this.sink.event(t, x);
+};
+
+Pipe.prototype.end = function (t, x) {
+  return this.sink.end(t, x);
+};
+
+Pipe.prototype.error = function (t, e) {
+  return this.sink.error(t, e);
+};
+},{}],467:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = SafeSink;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function SafeSink(sink) {
+  this.sink = sink;
+  this.active = true;
+}
+
+SafeSink.prototype.event = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+  this.sink.event(t, x);
+};
+
+SafeSink.prototype.end = function (t, x) {
+  if (!this.active) {
+    return;
+  }
+  this.disable();
+  this.sink.end(t, x);
+};
+
+SafeSink.prototype.error = function (t, e) {
+  this.disable();
+  this.sink.error(t, e);
+};
+
+SafeSink.prototype.disable = function () {
+  this.active = false;
+  return this.sink;
+};
+},{}],468:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = EventEmitterSource;
+
+var _DeferredSink = require('../sink/DeferredSink');
+
+var _DeferredSink2 = _interopRequireDefault(_DeferredSink);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _tryEvent = require('./tryEvent');
+
+var tryEvent = _interopRequireWildcard(_tryEvent);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function EventEmitterSource(event, source) {
+  this.event = event;
+  this.source = source;
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+EventEmitterSource.prototype.run = function (sink, scheduler) {
+  // NOTE: Because EventEmitter allows events in the same call stack as
+  // a listener is added, use a DeferredSink to buffer events
+  // until the stack clears, then propagate.  This maintains most.js's
+  // invariant that no event will be delivered in the same call stack
+  // as an observer begins observing.
+  var dsink = new _DeferredSink2.default(sink);
+
+  function addEventVariadic(a) {
+    var arguments$1 = arguments;
+
+    var l = arguments.length;
+    if (l > 1) {
+      var arr = new Array(l);
+      for (var i = 0; i < l; ++i) {
+        arr[i] = arguments$1[i];
+      }
+      tryEvent.tryEvent(scheduler.now(), arr, dsink);
+    } else {
+      tryEvent.tryEvent(scheduler.now(), a, dsink);
+    }
+  }
+
+  this.source.addListener(this.event, addEventVariadic);
+
+  return dispose.create(disposeEventEmitter, { target: this, addEvent: addEventVariadic });
+};
+
+function disposeEventEmitter(info) {
+  var target = info.target;
+  target.source.removeListener(target.event, info.addEvent);
+}
+},{"../disposable/dispose":446,"../sink/DeferredSink":464,"./tryEvent":478}],469:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = EventTargetSource;
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _tryEvent = require('./tryEvent');
+
+var tryEvent = _interopRequireWildcard(_tryEvent);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function EventTargetSource(event, source, capture) {
+  this.event = event;
+  this.source = source;
+  this.capture = capture;
+}
+
+EventTargetSource.prototype.run = function (sink, scheduler) {
+  function addEvent(e) {
+    tryEvent.tryEvent(scheduler.now(), e, sink);
+  }
+
+  this.source.addEventListener(this.event, addEvent, this.capture);
+
+  return dispose.create(disposeEventTarget, { target: this, addEvent: addEvent });
+};
+
+function disposeEventTarget(info) {
+  var target = info.target;
+  target.source.removeEventListener(target.event, info.addEvent, target.capture);
+}
+},{"../disposable/dispose":446,"./tryEvent":478}],470:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.of = of;
+exports.empty = empty;
+exports.never = never;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _dispose = require('../disposable/dispose');
+
+var dispose = _interopRequireWildcard(_dispose);
+
+var _PropagateTask = require('../scheduler/PropagateTask');
+
+var _PropagateTask2 = _interopRequireDefault(_PropagateTask);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Stream containing only x
+ * @param {*} x
+ * @returns {Stream}
+ */
+function of(x) {
+  return new _Stream2.default(new Just(x));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function Just(x) {
+  this.value = x;
+}
+
+Just.prototype.run = function (sink, scheduler) {
+  return scheduler.asap(new _PropagateTask2.default(runJust, this.value, sink));
+};
+
+function runJust(t, x, sink) {
+  sink.event(t, x);
+  sink.end(t, void 0);
+}
+
+/**
+ * Stream containing no events and ends immediately
+ * @returns {Stream}
+ */
+function empty() {
+  return EMPTY;
+}
+
+function EmptySource() {}
+
+EmptySource.prototype.run = function (sink, scheduler) {
+  var task = _PropagateTask2.default.end(void 0, sink);
+  scheduler.asap(task);
+
+  return dispose.create(disposeEmpty, task);
+};
+
+function disposeEmpty(task) {
+  return task.dispose();
+}
+
+var EMPTY = new _Stream2.default(new EmptySource());
+
+/**
+ * Stream containing no events and never ends
+ * @returns {Stream}
+ */
+function never() {
+  return NEVER;
+}
+
+function NeverSource() {}
+
+NeverSource.prototype.run = function () {
+  return dispose.empty();
+};
+
+var NEVER = new _Stream2.default(new NeverSource());
+},{"../Stream":418,"../disposable/dispose":446,"../scheduler/PropagateTask":459}],471:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.from = from;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _fromArray = require('./fromArray');
+
+var _iterable = require('../iterable');
+
+var _fromIterable = require('./fromIterable');
+
+var _getObservable = require('../observable/getObservable');
+
+var _getObservable2 = _interopRequireDefault(_getObservable);
+
+var _fromObservable = require('../observable/fromObservable');
+
+var _prelude = require('@most/prelude');
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function from(a) {
+  // eslint-disable-line complexity
+  if (a instanceof _Stream2.default) {
+    return a;
+  }
+
+  var observable = (0, _getObservable2.default)(a);
+  if (observable != null) {
+    return (0, _fromObservable.fromObservable)(observable);
+  }
+
+  if (Array.isArray(a) || (0, _prelude.isArrayLike)(a)) {
+    return (0, _fromArray.fromArray)(a);
+  }
+
+  if ((0, _iterable.isIterable)(a)) {
+    return (0, _fromIterable.fromIterable)(a);
+  }
+
+  throw new TypeError('from(x) must be observable, iterable, or array-like: ' + a);
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+},{"../Stream":418,"../iterable":453,"../observable/fromObservable":454,"../observable/getObservable":455,"./fromArray":472,"./fromIterable":474,"@most/prelude":490}],472:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.fromArray = fromArray;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _PropagateTask = require('../scheduler/PropagateTask');
+
+var _PropagateTask2 = _interopRequireDefault(_PropagateTask);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function fromArray(a) {
+  return new _Stream2.default(new ArraySource(a));
+}
+
+function ArraySource(a) {
+  this.array = a;
+}
+
+ArraySource.prototype.run = function (sink, scheduler) {
+  return scheduler.asap(new _PropagateTask2.default(runProducer, this.array, sink));
+};
+
+function runProducer(t, array, sink) {
+  for (var i = 0, l = array.length; i < l && this.active; ++i) {
+    sink.event(t, array[i]);
+  }
+
+  this.active && sink.end(t);
+}
+},{"../Stream":418,"../scheduler/PropagateTask":459}],473:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.fromEvent = fromEvent;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _EventTargetSource = require('./EventTargetSource');
+
+var _EventTargetSource2 = _interopRequireDefault(_EventTargetSource);
+
+var _EventEmitterSource = require('./EventEmitterSource');
+
+var _EventEmitterSource2 = _interopRequireDefault(_EventEmitterSource);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Create a stream from an EventTarget, such as a DOM Node, or EventEmitter.
+ * @param {String} event event type name, e.g. 'click'
+ * @param {EventTarget|EventEmitter} source EventTarget or EventEmitter
+ * @param {*?} capture for DOM events, whether to use
+ *  capturing--passed as 3rd parameter to addEventListener.
+ * @returns {Stream} stream containing all events of the specified type
+ * from the source.
+ */
+function fromEvent(event, source, capture) {
+  // eslint-disable-line complexity
+  var s;
+
+  if (typeof source.addEventListener === 'function' && typeof source.removeEventListener === 'function') {
+    if (arguments.length < 3) {
+      capture = false;
+    }
+
+    s = new _EventTargetSource2.default(event, source, capture);
+  } else if (typeof source.addListener === 'function' && typeof source.removeListener === 'function') {
+    s = new _EventEmitterSource2.default(event, source);
+  } else {
+    throw new Error('source must support addEventListener/removeEventListener or addListener/removeListener');
+  }
+
+  return new _Stream2.default(s);
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+},{"../Stream":418,"./EventEmitterSource":468,"./EventTargetSource":469}],474:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.fromIterable = fromIterable;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _iterable = require('../iterable');
+
+var _PropagateTask = require('../scheduler/PropagateTask');
+
+var _PropagateTask2 = _interopRequireDefault(_PropagateTask);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+function fromIterable(iterable) {
+  return new _Stream2.default(new IterableSource(iterable));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function IterableSource(iterable) {
+  this.iterable = iterable;
+}
+
+IterableSource.prototype.run = function (sink, scheduler) {
+  return scheduler.asap(new _PropagateTask2.default(runProducer, (0, _iterable.getIterator)(this.iterable), sink));
+};
+
+function runProducer(t, iterator, sink) {
+  var r = iterator.next();
+
+  while (!r.done && this.active) {
+    sink.event(t, r.value);
+    r = iterator.next();
+  }
+
+  sink.end(t, r.value);
+}
+},{"../Stream":418,"../iterable":453,"../scheduler/PropagateTask":459}],475:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.generate = generate;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _prelude = require('@most/prelude');
+
+var base = _interopRequireWildcard(_prelude);
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { newObj[key] = obj[key]; } } } newObj.default = obj; return newObj; } }
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Compute a stream using an *async* generator, which yields promises
+ * to control event times.
+ * @param f
+ * @returns {Stream}
+ */
+/** @license MIT License (c) copyright 2010-2014 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function generate(f /*, ...args */) {
+  return new _Stream2.default(new GenerateSource(f, base.tail(arguments)));
+}
+
+function GenerateSource(f, args) {
+  this.f = f;
+  this.args = args;
+}
+
+GenerateSource.prototype.run = function (sink, scheduler) {
+  return new Generate(this.f.apply(void 0, this.args), sink, scheduler);
+};
+
+function Generate(iterator, sink, scheduler) {
+  this.iterator = iterator;
+  this.sink = sink;
+  this.scheduler = scheduler;
+  this.active = true;
+
+  var self = this;
+  function err(e) {
+    self.sink.error(self.scheduler.now(), e);
+  }
+
+  Promise.resolve(this).then(next).catch(err);
+}
+
+function next(generate, x) {
+  return generate.active ? handle(generate, generate.iterator.next(x)) : x;
+}
+
+function handle(generate, result) {
+  if (result.done) {
+    return generate.sink.end(generate.scheduler.now(), result.value);
+  }
+
+  return Promise.resolve(result.value).then(function (x) {
+    return emit(generate, x);
+  }, function (e) {
+    return error(generate, e);
+  });
+}
+
+function emit(generate, x) {
+  generate.sink.event(generate.scheduler.now(), x);
+  return next(generate, x);
+}
+
+function error(generate, e) {
+  return handle(generate, generate.iterator.throw(e));
+}
+
+Generate.prototype.dispose = function () {
+  this.active = false;
+};
+},{"../Stream":418,"@most/prelude":490}],476:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.iterate = iterate;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Compute a stream by iteratively calling f to produce values
+ * Event times may be controlled by returning a Promise from f
+ * @param {function(x:*):*|Promise<*>} f
+ * @param {*} x initial value
+ * @returns {Stream}
+ */
+function iterate(f, x) {
+  return new _Stream2.default(new IterateSource(f, x));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function IterateSource(f, x) {
+  this.f = f;
+  this.value = x;
+}
+
+IterateSource.prototype.run = function (sink, scheduler) {
+  return new Iterate(this.f, this.value, sink, scheduler);
+};
+
+function Iterate(f, initial, sink, scheduler) {
+  this.f = f;
+  this.sink = sink;
+  this.scheduler = scheduler;
+  this.active = true;
+
+  var x = initial;
+
+  var self = this;
+  function err(e) {
+    self.sink.error(self.scheduler.now(), e);
+  }
+
+  function start(iterate) {
+    return stepIterate(iterate, x);
+  }
+
+  Promise.resolve(this).then(start).catch(err);
+}
+
+Iterate.prototype.dispose = function () {
+  this.active = false;
+};
+
+function stepIterate(iterate, x) {
+  iterate.sink.event(iterate.scheduler.now(), x);
+
+  if (!iterate.active) {
+    return x;
+  }
+
+  var f = iterate.f;
+  return Promise.resolve(f(x)).then(function (y) {
+    return continueIterate(iterate, y);
+  });
+}
+
+function continueIterate(iterate, x) {
+  return !iterate.active ? iterate.value : stepIterate(iterate, x);
+}
+},{"../Stream":418}],477:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.periodic = periodic;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+var _PropagateTask = require('../scheduler/PropagateTask');
+
+var _PropagateTask2 = _interopRequireDefault(_PropagateTask);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Create a stream that emits the current time periodically
+ * @param {Number} period periodicity of events in millis
+ * @param {*} deprecatedValue @deprecated value to emit each period
+ * @returns {Stream} new stream that emits the current time every period
+ */
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function periodic(period, deprecatedValue) {
+  return new _Stream2.default(new Periodic(period, deprecatedValue));
+}
+
+function Periodic(period, value) {
+  this.period = period;
+  this.value = value;
+}
+
+Periodic.prototype.run = function (sink, scheduler) {
+  return scheduler.periodic(this.period, _PropagateTask2.default.event(this.value, sink));
+};
+},{"../Stream":418,"../scheduler/PropagateTask":459}],478:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.tryEvent = tryEvent;
+exports.tryEnd = tryEnd;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function tryEvent(t, x, sink) {
+  try {
+    sink.event(t, x);
+  } catch (e) {
+    sink.error(t, e);
+  }
+}
+
+function tryEnd(t, x, sink) {
+  try {
+    sink.end(t, x);
+  } catch (e) {
+    sink.error(t, e);
+  }
+}
+},{}],479:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.unfold = unfold;
+
+var _Stream = require('../Stream');
+
+var _Stream2 = _interopRequireDefault(_Stream);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/**
+ * Compute a stream by unfolding tuples of future values from a seed value
+ * Event times may be controlled by returning a Promise from f
+ * @param {function(seed:*):{value:*, seed:*, done:boolean}|Promise<{value:*, seed:*, done:boolean}>} f unfolding function accepts
+ *  a seed and returns a new tuple with a value, new seed, and boolean done flag.
+ *  If tuple.done is true, the stream will end.
+ * @param {*} seed seed value
+ * @returns {Stream} stream containing all value of all tuples produced by the
+ *  unfolding function.
+ */
+function unfold(f, seed) {
+  return new _Stream2.default(new UnfoldSource(f, seed));
+} /** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function UnfoldSource(f, seed) {
+  this.f = f;
+  this.value = seed;
+}
+
+UnfoldSource.prototype.run = function (sink, scheduler) {
+  return new Unfold(this.f, this.value, sink, scheduler);
+};
+
+function Unfold(f, x, sink, scheduler) {
+  this.f = f;
+  this.sink = sink;
+  this.scheduler = scheduler;
+  this.active = true;
+
+  var self = this;
+  function err(e) {
+    self.sink.error(self.scheduler.now(), e);
+  }
+
+  function start(unfold) {
+    return stepUnfold(unfold, x);
+  }
+
+  Promise.resolve(this).then(start).catch(err);
+}
+
+Unfold.prototype.dispose = function () {
+  this.active = false;
+};
+
+function stepUnfold(unfold, x) {
+  var f = unfold.f;
+  return Promise.resolve(f(x)).then(function (tuple) {
+    return continueUnfold(unfold, tuple);
+  });
+}
+
+function continueUnfold(unfold, tuple) {
+  if (tuple.done) {
+    unfold.sink.end(unfold.scheduler.now(), tuple.value);
+    return tuple.value;
+  }
+
+  unfold.sink.event(unfold.scheduler.now(), tuple.value);
+
+  if (!unfold.active) {
+    return tuple.value;
+  }
+  return stepUnfold(unfold, tuple.seed);
+}
+},{"../Stream":418}],480:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.defer = defer;
+exports.runTask = runTask;
+/** @license MIT License (c) copyright 2010-2016 original author or authors */
+/** @author Brian Cavalier */
+/** @author John Hann */
+
+function defer(task) {
+  return Promise.resolve(task).then(runTask);
+}
+
+function runTask(task) {
+  try {
+    return task.run();
+  } catch (e) {
+    return task.error(e);
+  }
+}
+},{}],481:[function(require,module,exports){
+(function (global){(function (){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+
+var _ponyfill = require('./ponyfill.js');
+
+var _ponyfill2 = _interopRequireDefault(_ponyfill);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
+
+var root; /* global window */
+
+
+if (typeof self !== 'undefined') {
+  root = self;
+} else if (typeof window !== 'undefined') {
+  root = window;
+} else if (typeof global !== 'undefined') {
+  root = global;
+} else if (typeof module !== 'undefined') {
+  root = module;
+} else {
+  root = Function('return this')();
+}
+
+var result = (0, _ponyfill2['default'])(root);
+exports['default'] = result;
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./ponyfill.js":482}],482:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, "__esModule", {
+	value: true
+});
+exports['default'] = symbolObservablePonyfill;
+function symbolObservablePonyfill(root) {
+	var result;
+	var _Symbol = root.Symbol;
+
+	if (typeof _Symbol === 'function') {
+		if (_Symbol.observable) {
+			result = _Symbol.observable;
+		} else {
+			result = _Symbol('observable');
+			_Symbol.observable = result;
+		}
+	} else {
+		result = '@@observable';
+	}
+
+	return result;
+};
+},{}],483:[function(require,module,exports){
+const { merge } = require('most')
+
+// based on http://jsfiddle.net/mattpodwysocki/pfCqq/
+const mouseDrags = (mouseDowns$, mouseUps, mouseMoves, settings) => {
+  const { pixelRatio } = settings
+  return mouseDowns$.flatMap((md) => {
+    // calculate offsets when mouse down
+    const startX = md.pageX * pixelRatio
+    const startY = md.pageY * pixelRatio
+    // Calculate delta with mousemove until mouseup
+    let prevX = startX
+    let prevY = startY
+
+    return mouseMoves
+      .map((e) => {
+        const curX = e.pageX * pixelRatio
+        const curY = e.pageY * pixelRatio
+
+        const delta = {
+          left: curX - startX,
+          top: curY - startY,
+          x: prevX - curX,
+          y: curY - prevY
+        }
+
+        prevX = curX
+        prevY = curY
+
+        const normalized = { x: curX, y: curY }
+        return { originalEvents: [e], delta, normalized, type: 'mouse' }
+      })
+      .takeUntil(mouseUps)
   })
 }
 
-Buffer.poolSize = 8192 // not used by this implementation
+const touchDrags = (touchStarts$, touchEnds$, touchMoves$, settings) => {
+  const { pixelRatio } = settings
+  return touchStarts$
+    // 2020-09 FIX
+    .filter((t) => (t.touches.length === 1 || t.touches.length === 3)) // length 2 is pinch (zoom)
+    // 2020-09 FIX
+    .flatMap((e) => {
+      const startX = e.touches[0].pageX * pixelRatio
+      const startY = e.touches[0].pageY * pixelRatio
 
-function from (value, encodingOrOffset, length) {
-  if (typeof value === 'string') {
-    return fromString(value, encodingOrOffset)
-  }
+      let prevX = startX
+      let prevY = startY
 
-  if (ArrayBuffer.isView(value)) {
-    return fromArrayLike(value)
-  }
+      return touchMoves$
+        .map((e) => {
+          const curX = e.touches[0].pageX * pixelRatio
+          const curY = e.touches[0].pageY * pixelRatio
 
-  if (value == null) {
-    throw TypeError(
-      'The first argument must be one of type string, Buffer, ArrayBuffer, Array, ' +
-      'or Array-like Object. Received type ' + (typeof value)
-    )
-  }
+          const delta = {
+            left: curX - startX,
+            top: curY - startY,
+            x: prevX - curX,
+            y: curY - prevY
+          }
 
-  if (isInstance(value, ArrayBuffer) ||
-      (value && isInstance(value.buffer, ArrayBuffer))) {
-    return fromArrayBuffer(value, encodingOrOffset, length)
-  }
+          prevX = curX
+          prevY = curY
 
-  if (typeof value === 'number') {
-    throw new TypeError(
-      'The "value" argument must not be of type number. Received type number'
-    )
-  }
+          const normalized = { x: curX, y: curY }
+          return { originalEvents: [e], delta, normalized, type: 'touch' }
+        })
+        .takeUntil(touchEnds$)
+    })
+}
 
-  var valueOf = value.valueOf && value.valueOf()
-  if (valueOf != null && valueOf !== value) {
-    return Buffer.from(valueOf, encodingOrOffset, length)
-  }
-
-  var b = fromObject(value)
-  if (b) return b
-
-  if (typeof Symbol !== 'undefined' && Symbol.toPrimitive != null &&
-      typeof value[Symbol.toPrimitive] === 'function') {
-    return Buffer.from(
-      value[Symbol.toPrimitive]('string'), encodingOrOffset, length
-    )
-  }
-
-  throw new TypeError(
-    'The first argument must be one of type string, Buffer, ArrayBuffer, Array, ' +
-    'or Array-like Object. Received type ' + (typeof value)
+/* drag move interactions press & move(continuously firing)
+*/
+const drags = ({ mouseDowns$, mouseUps$, mouseMoves$, touchStarts$, touchEnds$, longTaps$, touchMoves$ }, settings) => {
+  // 2020-09 FIX
+  // touchMoves$ = touchMoves$.filter(t => t.touches.length === 1)
+  // 2020-09 FIX
+  const drags$ = merge(
+    mouseDrags(mouseDowns$, mouseUps$, mouseMoves$, settings),
+    touchDrags(touchStarts$, touchEnds$, touchMoves$, settings)
   )
+  // .merge(merge(touchEnds$, mouseUps$).map(undefined))
+  // .tap(e=>console.log('dragMoves',e))
+
+  // .takeUntil(longTaps$) // .repeat() // no drag moves if there is a context action already taking place
+
+  return drags$
 }
+
+module.exports = { mouseDrags, touchDrags, drags }
+
+},{"most":451}],484:[function(require,module,exports){
+const { fromEvent, merge } = require('most')
+const { normalizeWheel, preventDefault } = require('./utils')
+const { presses } = require('./presses')
+const { taps } = require('./taps')
+const { drags } = require('./drags')
+const { zooms } = require('./zooms')
 
 /**
- * Functionally equivalent to Buffer(arg, encoding) but throws a TypeError
- * if value is a number.
- * Buffer.from(str[, encoding])
- * Buffer.from(array)
- * Buffer.from(buffer)
- * Buffer.from(arrayBuffer[, byteOffset[, length]])
- **/
-Buffer.from = function (value, encodingOrOffset, length) {
-  return from(value, encodingOrOffset, length)
-}
-
-// Note: Change prototype *after* Buffer.from is defined to workaround Chrome bug:
-// https://github.com/feross/buffer/pull/148
-Buffer.prototype.__proto__ = Uint8Array.prototype
-Buffer.__proto__ = Uint8Array
-
-function assertSize (size) {
-  if (typeof size !== 'number') {
-    throw new TypeError('"size" argument must be of type number')
-  } else if (size < 0) {
-    throw new RangeError('The value "' + size + '" is invalid for option "size"')
-  }
-}
-
-function alloc (size, fill, encoding) {
-  assertSize(size)
-  if (size <= 0) {
-    return createBuffer(size)
-  }
-  if (fill !== undefined) {
-    // Only pay attention to encoding if it's a string. This
-    // prevents accidentally sending in a number that would
-    // be interpretted as a start offset.
-    return typeof encoding === 'string'
-      ? createBuffer(size).fill(fill, encoding)
-      : createBuffer(size).fill(fill)
-  }
-  return createBuffer(size)
-}
-
-/**
- * Creates a new filled Buffer instance.
- * alloc(size[, fill[, encoding]])
- **/
-Buffer.alloc = function (size, fill, encoding) {
-  return alloc(size, fill, encoding)
-}
-
-function allocUnsafe (size) {
-  assertSize(size)
-  return createBuffer(size < 0 ? 0 : checked(size) | 0)
-}
-
-/**
- * Equivalent to Buffer(num), by default creates a non-zero-filled Buffer instance.
- * */
-Buffer.allocUnsafe = function (size) {
-  return allocUnsafe(size)
-}
-/**
- * Equivalent to SlowBuffer(num), by default creates a non-zero-filled Buffer instance.
+ * returns an object of base interactions from dom events, on the target element.
+ * @param {DomElement} targetEl - The dom element to attach events handlers to
+ * @param {Object} options
+ * @param {Boolean} options.passiveEventsHandlers=true  Whenever possible make event listeners passive
+ * (see here https://developers.google.com/web/updates/2016/06/passive-event-listeners for more details)
+ * @param {Boolean} options.preventScroll=true Prevent all forms of scrolling on the target element
+ * @param {Boolean} options.preventMenu=true Prevent default right click menu on the target element
+ * @returns {Object}
  */
-Buffer.allocUnsafeSlow = function (size) {
-  return allocUnsafe(size)
-}
+const baseInteractionsFromEvents = (targetEl, options) => {
+  const defaults = {
+    passiveEventsHandlers: true,
+    preventScroll: true,
+    preventMenu: true
+  }
+  options = Object.assign({}, defaults, options)
+  const { passiveEventsHandlers, preventScroll, preventMenu } = options
 
-function fromString (string, encoding) {
-  if (typeof encoding !== 'string' || encoding === '') {
-    encoding = 'utf8'
+  const mouseDowns$ = fromEvent('mousedown', targetEl, { passive: passiveEventsHandlers, capture: false })
+  const mouseUps$ = fromEvent('mouseup', targetEl, { passive: passiveEventsHandlers, capture: false })
+  // const mouseLeaves$ = fromEvent('mouseleave', targetEl, {passive:true,capture:false}).merge(fromEvent('mouseout', targetEl, {passive:true,capture:false}))
+  const mouseMoves$ = fromEvent('mousemove', targetEl, { passive: passiveEventsHandlers, capture: false }) // .takeUntil(mouseLeaves$) // altMouseMoves(fromEvent(targetEl, 'mousemove')).takeUntil(mouseLeaves$)
+  const rightClicks$ = fromEvent('contextmenu', targetEl, { passive: !options.preventMenu, capture: false })
+
+  const touchStarts$ = fromEvent('touchstart', targetEl, { passive: passiveEventsHandlers, capture: false })
+  const touchMoves$ = fromEvent('touchmove', targetEl, { passive: passiveEventsHandlers, capture: false })
+  const touchEnds$ = fromEvent('touchend', targetEl, { passive: passiveEventsHandlers, capture: false })
+
+  const pointerDowns$ = merge(mouseDowns$, touchStarts$) // mouse & touch interactions starts
+  const pointerUps$ = merge(mouseUps$, touchEnds$) // mouse & touch interactions ends
+  const pointerMoves$ = merge(mouseMoves$, touchMoves$.filter((t) => t.touches.length === 1))
+
+  const preventAllScrolls = (targetEl) => {
+    fromEvent('mousewheel', targetEl, { passive: false, capture: false }).forEach(preventDefault)
+    fromEvent('DOMMouseScroll', targetEl, { passive: false, capture: false }).forEach(preventDefault)
+    fromEvent('wheel', targetEl, { passive: false, capture: false }).forEach(preventDefault)
+    fromEvent('touchmove', targetEl, { passive: false, capture: false }).forEach(preventDefault)
   }
 
-  if (!Buffer.isEncoding(encoding)) {
-    throw new TypeError('Unknown encoding: ' + encoding)
+  if (preventScroll) {
+    preventAllScrolls(targetEl, { passive: passiveEventsHandlers, capture: false })
+  }
+  if (preventMenu) {
+    rightClicks$.forEach(preventDefault)
   }
 
-  var length = byteLength(string, encoding) | 0
-  var buf = createBuffer(length)
+  const wheel$ = merge(
+    fromEvent('wheel', targetEl, { passive: passiveEventsHandlers, capture: false }),
+    fromEvent('DOMMouseScroll', targetEl, { passive: passiveEventsHandlers, capture: false }),
+    fromEvent('mousewheel', targetEl, { passive: passiveEventsHandlers, capture: false })
+  ).map(normalizeWheel)
 
-  var actual = buf.write(string, encoding)
-
-  if (actual !== length) {
-    // Writing a hex string, for example, that contains invalid characters will
-    // cause everything after the first invalid character to be ignored. (e.g.
-    // 'abxxcd' will be treated as 'ab')
-    buf = buf.slice(0, actual)
-  }
-
-  return buf
-}
-
-function fromArrayLike (array) {
-  var length = array.length < 0 ? 0 : checked(array.length) | 0
-  var buf = createBuffer(length)
-  for (var i = 0; i < length; i += 1) {
-    buf[i] = array[i] & 255
-  }
-  return buf
-}
-
-function fromArrayBuffer (array, byteOffset, length) {
-  if (byteOffset < 0 || array.byteLength < byteOffset) {
-    throw new RangeError('"offset" is outside of buffer bounds')
-  }
-
-  if (array.byteLength < byteOffset + (length || 0)) {
-    throw new RangeError('"length" is outside of buffer bounds')
-  }
-
-  var buf
-  if (byteOffset === undefined && length === undefined) {
-    buf = new Uint8Array(array)
-  } else if (length === undefined) {
-    buf = new Uint8Array(array, byteOffset)
-  } else {
-    buf = new Uint8Array(array, byteOffset, length)
-  }
-
-  // Return an augmented `Uint8Array` instance
-  buf.__proto__ = Buffer.prototype
-  return buf
-}
-
-function fromObject (obj) {
-  if (Buffer.isBuffer(obj)) {
-    var len = checked(obj.length) | 0
-    var buf = createBuffer(len)
-
-    if (buf.length === 0) {
-      return buf
-    }
-
-    obj.copy(buf, 0, 0, len)
-    return buf
-  }
-
-  if (obj.length !== undefined) {
-    if (typeof obj.length !== 'number' || numberIsNaN(obj.length)) {
-      return createBuffer(0)
-    }
-    return fromArrayLike(obj)
-  }
-
-  if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
-    return fromArrayLike(obj.data)
-  }
-}
-
-function checked (length) {
-  // Note: cannot use `length < K_MAX_LENGTH` here because that fails when
-  // length is NaN (which is otherwise coerced to zero.)
-  if (length >= K_MAX_LENGTH) {
-    throw new RangeError('Attempt to allocate Buffer larger than maximum ' +
-                         'size: 0x' + K_MAX_LENGTH.toString(16) + ' bytes')
-  }
-  return length | 0
-}
-
-function SlowBuffer (length) {
-  if (+length != length) { // eslint-disable-line eqeqeq
-    length = 0
-  }
-  return Buffer.alloc(+length)
-}
-
-Buffer.isBuffer = function isBuffer (b) {
-  return b != null && b._isBuffer === true &&
-    b !== Buffer.prototype // so Buffer.isBuffer(Buffer.prototype) will be false
-}
-
-Buffer.compare = function compare (a, b) {
-  if (isInstance(a, Uint8Array)) a = Buffer.from(a, a.offset, a.byteLength)
-  if (isInstance(b, Uint8Array)) b = Buffer.from(b, b.offset, b.byteLength)
-  if (!Buffer.isBuffer(a) || !Buffer.isBuffer(b)) {
-    throw new TypeError(
-      'The "buf1", "buf2" arguments must be one of type Buffer or Uint8Array'
-    )
-  }
-
-  if (a === b) return 0
-
-  var x = a.length
-  var y = b.length
-
-  for (var i = 0, len = Math.min(x, y); i < len; ++i) {
-    if (a[i] !== b[i]) {
-      x = a[i]
-      y = b[i]
-      break
-    }
-  }
-
-  if (x < y) return -1
-  if (y < x) return 1
-  return 0
-}
-
-Buffer.isEncoding = function isEncoding (encoding) {
-  switch (String(encoding).toLowerCase()) {
-    case 'hex':
-    case 'utf8':
-    case 'utf-8':
-    case 'ascii':
-    case 'latin1':
-    case 'binary':
-    case 'base64':
-    case 'ucs2':
-    case 'ucs-2':
-    case 'utf16le':
-    case 'utf-16le':
-      return true
-    default:
-      return false
-  }
-}
-
-Buffer.concat = function concat (list, length) {
-  if (!Array.isArray(list)) {
-    throw new TypeError('"list" argument must be an Array of Buffers')
-  }
-
-  if (list.length === 0) {
-    return Buffer.alloc(0)
-  }
-
-  var i
-  if (length === undefined) {
-    length = 0
-    for (i = 0; i < list.length; ++i) {
-      length += list[i].length
-    }
-  }
-
-  var buffer = Buffer.allocUnsafe(length)
-  var pos = 0
-  for (i = 0; i < list.length; ++i) {
-    var buf = list[i]
-    if (isInstance(buf, Uint8Array)) {
-      buf = Buffer.from(buf)
-    }
-    if (!Buffer.isBuffer(buf)) {
-      throw new TypeError('"list" argument must be an Array of Buffers')
-    }
-    buf.copy(buffer, pos)
-    pos += buf.length
-  }
-  return buffer
-}
-
-function byteLength (string, encoding) {
-  if (Buffer.isBuffer(string)) {
-    return string.length
-  }
-  if (ArrayBuffer.isView(string) || isInstance(string, ArrayBuffer)) {
-    return string.byteLength
-  }
-  if (typeof string !== 'string') {
-    throw new TypeError(
-      'The "string" argument must be one of type string, Buffer, or ArrayBuffer. ' +
-      'Received type ' + typeof string
-    )
-  }
-
-  var len = string.length
-  var mustMatch = (arguments.length > 2 && arguments[2] === true)
-  if (!mustMatch && len === 0) return 0
-
-  // Use a for loop to avoid recursion
-  var loweredCase = false
-  for (;;) {
-    switch (encoding) {
-      case 'ascii':
-      case 'latin1':
-      case 'binary':
-        return len
-      case 'utf8':
-      case 'utf-8':
-        return utf8ToBytes(string).length
-      case 'ucs2':
-      case 'ucs-2':
-      case 'utf16le':
-      case 'utf-16le':
-        return len * 2
-      case 'hex':
-        return len >>> 1
-      case 'base64':
-        return base64ToBytes(string).length
-      default:
-        if (loweredCase) {
-          return mustMatch ? -1 : utf8ToBytes(string).length // assume utf8
-        }
-        encoding = ('' + encoding).toLowerCase()
-        loweredCase = true
-    }
-  }
-}
-Buffer.byteLength = byteLength
-
-function slowToString (encoding, start, end) {
-  var loweredCase = false
-
-  // No need to verify that "this.length <= MAX_UINT32" since it's a read-only
-  // property of a typed array.
-
-  // This behaves neither like String nor Uint8Array in that we set start/end
-  // to their upper/lower bounds if the value passed is out of range.
-  // undefined is handled specially as per ECMA-262 6th Edition,
-  // Section 13.3.3.7 Runtime Semantics: KeyedBindingInitialization.
-  if (start === undefined || start < 0) {
-    start = 0
-  }
-  // Return early if start > this.length. Done here to prevent potential uint32
-  // coercion fail below.
-  if (start > this.length) {
-    return ''
-  }
-
-  if (end === undefined || end > this.length) {
-    end = this.length
-  }
-
-  if (end <= 0) {
-    return ''
-  }
-
-  // Force coersion to uint32. This will also coerce falsey/NaN values to 0.
-  end >>>= 0
-  start >>>= 0
-
-  if (end <= start) {
-    return ''
-  }
-
-  if (!encoding) encoding = 'utf8'
-
-  while (true) {
-    switch (encoding) {
-      case 'hex':
-        return hexSlice(this, start, end)
-
-      case 'utf8':
-      case 'utf-8':
-        return utf8Slice(this, start, end)
-
-      case 'ascii':
-        return asciiSlice(this, start, end)
-
-      case 'latin1':
-      case 'binary':
-        return latin1Slice(this, start, end)
-
-      case 'base64':
-        return base64Slice(this, start, end)
-
-      case 'ucs2':
-      case 'ucs-2':
-      case 'utf16le':
-      case 'utf-16le':
-        return utf16leSlice(this, start, end)
-
-      default:
-        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)
-        encoding = (encoding + '').toLowerCase()
-        loweredCase = true
-    }
-  }
-}
-
-// This property is used by `Buffer.isBuffer` (and the `is-buffer` npm package)
-// to detect a Buffer instance. It's not possible to use `instanceof Buffer`
-// reliably in a browserify context because there could be multiple different
-// copies of the 'buffer' package in use. This method works even for Buffer
-// instances that were created from another copy of the `buffer` package.
-// See: https://github.com/feross/buffer/issues/154
-Buffer.prototype._isBuffer = true
-
-function swap (b, n, m) {
-  var i = b[n]
-  b[n] = b[m]
-  b[m] = i
-}
-
-Buffer.prototype.swap16 = function swap16 () {
-  var len = this.length
-  if (len % 2 !== 0) {
-    throw new RangeError('Buffer size must be a multiple of 16-bits')
-  }
-  for (var i = 0; i < len; i += 2) {
-    swap(this, i, i + 1)
-  }
-  return this
-}
-
-Buffer.prototype.swap32 = function swap32 () {
-  var len = this.length
-  if (len % 4 !== 0) {
-    throw new RangeError('Buffer size must be a multiple of 32-bits')
-  }
-  for (var i = 0; i < len; i += 4) {
-    swap(this, i, i + 3)
-    swap(this, i + 1, i + 2)
-  }
-  return this
-}
-
-Buffer.prototype.swap64 = function swap64 () {
-  var len = this.length
-  if (len % 8 !== 0) {
-    throw new RangeError('Buffer size must be a multiple of 64-bits')
-  }
-  for (var i = 0; i < len; i += 8) {
-    swap(this, i, i + 7)
-    swap(this, i + 1, i + 6)
-    swap(this, i + 2, i + 5)
-    swap(this, i + 3, i + 4)
-  }
-  return this
-}
-
-Buffer.prototype.toString = function toString () {
-  var length = this.length
-  if (length === 0) return ''
-  if (arguments.length === 0) return utf8Slice(this, 0, length)
-  return slowToString.apply(this, arguments)
-}
-
-Buffer.prototype.toLocaleString = Buffer.prototype.toString
-
-Buffer.prototype.equals = function equals (b) {
-  if (!Buffer.isBuffer(b)) throw new TypeError('Argument must be a Buffer')
-  if (this === b) return true
-  return Buffer.compare(this, b) === 0
-}
-
-Buffer.prototype.inspect = function inspect () {
-  var str = ''
-  var max = exports.INSPECT_MAX_BYTES
-  str = this.toString('hex', 0, max).replace(/(.{2})/g, '$1 ').trim()
-  if (this.length > max) str += ' ... '
-  return '<Buffer ' + str + '>'
-}
-
-Buffer.prototype.compare = function compare (target, start, end, thisStart, thisEnd) {
-  if (isInstance(target, Uint8Array)) {
-    target = Buffer.from(target, target.offset, target.byteLength)
-  }
-  if (!Buffer.isBuffer(target)) {
-    throw new TypeError(
-      'The "target" argument must be one of type Buffer or Uint8Array. ' +
-      'Received type ' + (typeof target)
-    )
-  }
-
-  if (start === undefined) {
-    start = 0
-  }
-  if (end === undefined) {
-    end = target ? target.length : 0
-  }
-  if (thisStart === undefined) {
-    thisStart = 0
-  }
-  if (thisEnd === undefined) {
-    thisEnd = this.length
-  }
-
-  if (start < 0 || end > target.length || thisStart < 0 || thisEnd > this.length) {
-    throw new RangeError('out of range index')
-  }
-
-  if (thisStart >= thisEnd && start >= end) {
-    return 0
-  }
-  if (thisStart >= thisEnd) {
-    return -1
-  }
-  if (start >= end) {
-    return 1
-  }
-
-  start >>>= 0
-  end >>>= 0
-  thisStart >>>= 0
-  thisEnd >>>= 0
-
-  if (this === target) return 0
-
-  var x = thisEnd - thisStart
-  var y = end - start
-  var len = Math.min(x, y)
-
-  var thisCopy = this.slice(thisStart, thisEnd)
-  var targetCopy = target.slice(start, end)
-
-  for (var i = 0; i < len; ++i) {
-    if (thisCopy[i] !== targetCopy[i]) {
-      x = thisCopy[i]
-      y = targetCopy[i]
-      break
-    }
-  }
-
-  if (x < y) return -1
-  if (y < x) return 1
-  return 0
-}
-
-// Finds either the first index of `val` in `buffer` at offset >= `byteOffset`,
-// OR the last index of `val` in `buffer` at offset <= `byteOffset`.
-//
-// Arguments:
-// - buffer - a Buffer to search
-// - val - a string, Buffer, or number
-// - byteOffset - an index into `buffer`; will be clamped to an int32
-// - encoding - an optional encoding, relevant is val is a string
-// - dir - true for indexOf, false for lastIndexOf
-function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
-  // Empty buffer means no match
-  if (buffer.length === 0) return -1
-
-  // Normalize byteOffset
-  if (typeof byteOffset === 'string') {
-    encoding = byteOffset
-    byteOffset = 0
-  } else if (byteOffset > 0x7fffffff) {
-    byteOffset = 0x7fffffff
-  } else if (byteOffset < -0x80000000) {
-    byteOffset = -0x80000000
-  }
-  byteOffset = +byteOffset // Coerce to Number.
-  if (numberIsNaN(byteOffset)) {
-    // byteOffset: it it's undefined, null, NaN, "foo", etc, search whole buffer
-    byteOffset = dir ? 0 : (buffer.length - 1)
-  }
-
-  // Normalize byteOffset: negative offsets start from the end of the buffer
-  if (byteOffset < 0) byteOffset = buffer.length + byteOffset
-  if (byteOffset >= buffer.length) {
-    if (dir) return -1
-    else byteOffset = buffer.length - 1
-  } else if (byteOffset < 0) {
-    if (dir) byteOffset = 0
-    else return -1
-  }
-
-  // Normalize val
-  if (typeof val === 'string') {
-    val = Buffer.from(val, encoding)
-  }
-
-  // Finally, search either indexOf (if dir is true) or lastIndexOf
-  if (Buffer.isBuffer(val)) {
-    // Special case: looking for empty string/buffer always fails
-    if (val.length === 0) {
-      return -1
-    }
-    return arrayIndexOf(buffer, val, byteOffset, encoding, dir)
-  } else if (typeof val === 'number') {
-    val = val & 0xFF // Search for a byte value [0-255]
-    if (typeof Uint8Array.prototype.indexOf === 'function') {
-      if (dir) {
-        return Uint8Array.prototype.indexOf.call(buffer, val, byteOffset)
-      } else {
-        return Uint8Array.prototype.lastIndexOf.call(buffer, val, byteOffset)
-      }
-    }
-    return arrayIndexOf(buffer, [ val ], byteOffset, encoding, dir)
-  }
-
-  throw new TypeError('val must be string, number or Buffer')
-}
-
-function arrayIndexOf (arr, val, byteOffset, encoding, dir) {
-  var indexSize = 1
-  var arrLength = arr.length
-  var valLength = val.length
-
-  if (encoding !== undefined) {
-    encoding = String(encoding).toLowerCase()
-    if (encoding === 'ucs2' || encoding === 'ucs-2' ||
-        encoding === 'utf16le' || encoding === 'utf-16le') {
-      if (arr.length < 2 || val.length < 2) {
-        return -1
-      }
-      indexSize = 2
-      arrLength /= 2
-      valLength /= 2
-      byteOffset /= 2
-    }
-  }
-
-  function read (buf, i) {
-    if (indexSize === 1) {
-      return buf[i]
-    } else {
-      return buf.readUInt16BE(i * indexSize)
-    }
-  }
-
-  var i
-  if (dir) {
-    var foundIndex = -1
-    for (i = byteOffset; i < arrLength; i++) {
-      if (read(arr, i) === read(val, foundIndex === -1 ? 0 : i - foundIndex)) {
-        if (foundIndex === -1) foundIndex = i
-        if (i - foundIndex + 1 === valLength) return foundIndex * indexSize
-      } else {
-        if (foundIndex !== -1) i -= i - foundIndex
-        foundIndex = -1
-      }
-    }
-  } else {
-    if (byteOffset + valLength > arrLength) byteOffset = arrLength - valLength
-    for (i = byteOffset; i >= 0; i--) {
-      var found = true
-      for (var j = 0; j < valLength; j++) {
-        if (read(arr, i + j) !== read(val, j)) {
-          found = false
-          break
-        }
-      }
-      if (found) return i
-    }
-  }
-
-  return -1
-}
-
-Buffer.prototype.includes = function includes (val, byteOffset, encoding) {
-  return this.indexOf(val, byteOffset, encoding) !== -1
-}
-
-Buffer.prototype.indexOf = function indexOf (val, byteOffset, encoding) {
-  return bidirectionalIndexOf(this, val, byteOffset, encoding, true)
-}
-
-Buffer.prototype.lastIndexOf = function lastIndexOf (val, byteOffset, encoding) {
-  return bidirectionalIndexOf(this, val, byteOffset, encoding, false)
-}
-
-function hexWrite (buf, string, offset, length) {
-  offset = Number(offset) || 0
-  var remaining = buf.length - offset
-  if (!length) {
-    length = remaining
-  } else {
-    length = Number(length)
-    if (length > remaining) {
-      length = remaining
-    }
-  }
-
-  var strLen = string.length
-
-  if (length > strLen / 2) {
-    length = strLen / 2
-  }
-  for (var i = 0; i < length; ++i) {
-    var parsed = parseInt(string.substr(i * 2, 2), 16)
-    if (numberIsNaN(parsed)) return i
-    buf[offset + i] = parsed
-  }
-  return i
-}
-
-function utf8Write (buf, string, offset, length) {
-  return blitBuffer(utf8ToBytes(string, buf.length - offset), buf, offset, length)
-}
-
-function asciiWrite (buf, string, offset, length) {
-  return blitBuffer(asciiToBytes(string), buf, offset, length)
-}
-
-function latin1Write (buf, string, offset, length) {
-  return asciiWrite(buf, string, offset, length)
-}
-
-function base64Write (buf, string, offset, length) {
-  return blitBuffer(base64ToBytes(string), buf, offset, length)
-}
-
-function ucs2Write (buf, string, offset, length) {
-  return blitBuffer(utf16leToBytes(string, buf.length - offset), buf, offset, length)
-}
-
-Buffer.prototype.write = function write (string, offset, length, encoding) {
-  // Buffer#write(string)
-  if (offset === undefined) {
-    encoding = 'utf8'
-    length = this.length
-    offset = 0
-  // Buffer#write(string, encoding)
-  } else if (length === undefined && typeof offset === 'string') {
-    encoding = offset
-    length = this.length
-    offset = 0
-  // Buffer#write(string, offset[, length][, encoding])
-  } else if (isFinite(offset)) {
-    offset = offset >>> 0
-    if (isFinite(length)) {
-      length = length >>> 0
-      if (encoding === undefined) encoding = 'utf8'
-    } else {
-      encoding = length
-      length = undefined
-    }
-  } else {
-    throw new Error(
-      'Buffer.write(string, encoding, offset[, length]) is no longer supported'
-    )
-  }
-
-  var remaining = this.length - offset
-  if (length === undefined || length > remaining) length = remaining
-
-  if ((string.length > 0 && (length < 0 || offset < 0)) || offset > this.length) {
-    throw new RangeError('Attempt to write outside buffer bounds')
-  }
-
-  if (!encoding) encoding = 'utf8'
-
-  var loweredCase = false
-  for (;;) {
-    switch (encoding) {
-      case 'hex':
-        return hexWrite(this, string, offset, length)
-
-      case 'utf8':
-      case 'utf-8':
-        return utf8Write(this, string, offset, length)
-
-      case 'ascii':
-        return asciiWrite(this, string, offset, length)
-
-      case 'latin1':
-      case 'binary':
-        return latin1Write(this, string, offset, length)
-
-      case 'base64':
-        // Warning: maxLength not taken into account in base64Write
-        return base64Write(this, string, offset, length)
-
-      case 'ucs2':
-      case 'ucs-2':
-      case 'utf16le':
-      case 'utf-16le':
-        return ucs2Write(this, string, offset, length)
-
-      default:
-        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)
-        encoding = ('' + encoding).toLowerCase()
-        loweredCase = true
-    }
-  }
-}
-
-Buffer.prototype.toJSON = function toJSON () {
   return {
-    type: 'Buffer',
-    data: Array.prototype.slice.call(this._arr || this, 0)
+    mouseDowns$,
+    mouseUps$,
+    mouseMoves$,
+
+    rightClicks$,
+    wheel$,
+
+    touchStarts$,
+    touchMoves$,
+    touchEnds$,
+
+    pointerDowns$,
+    pointerUps$,
+    pointerMoves$
   }
 }
 
-function base64Slice (buf, start, end) {
-  if (start === 0 && end === buf.length) {
-    return base64.fromByteArray(buf)
-  } else {
-    return base64.fromByteArray(buf.slice(start, end))
-  }
-}
-
-function utf8Slice (buf, start, end) {
-  end = Math.min(buf.length, end)
-  var res = []
-
-  var i = start
-  while (i < end) {
-    var firstByte = buf[i]
-    var codePoint = null
-    var bytesPerSequence = (firstByte > 0xEF) ? 4
-      : (firstByte > 0xDF) ? 3
-        : (firstByte > 0xBF) ? 2
-          : 1
-
-    if (i + bytesPerSequence <= end) {
-      var secondByte, thirdByte, fourthByte, tempCodePoint
-
-      switch (bytesPerSequence) {
-        case 1:
-          if (firstByte < 0x80) {
-            codePoint = firstByte
-          }
-          break
-        case 2:
-          secondByte = buf[i + 1]
-          if ((secondByte & 0xC0) === 0x80) {
-            tempCodePoint = (firstByte & 0x1F) << 0x6 | (secondByte & 0x3F)
-            if (tempCodePoint > 0x7F) {
-              codePoint = tempCodePoint
-            }
-          }
-          break
-        case 3:
-          secondByte = buf[i + 1]
-          thirdByte = buf[i + 2]
-          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80) {
-            tempCodePoint = (firstByte & 0xF) << 0xC | (secondByte & 0x3F) << 0x6 | (thirdByte & 0x3F)
-            if (tempCodePoint > 0x7FF && (tempCodePoint < 0xD800 || tempCodePoint > 0xDFFF)) {
-              codePoint = tempCodePoint
-            }
-          }
-          break
-        case 4:
-          secondByte = buf[i + 1]
-          thirdByte = buf[i + 2]
-          fourthByte = buf[i + 3]
-          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80 && (fourthByte & 0xC0) === 0x80) {
-            tempCodePoint = (firstByte & 0xF) << 0x12 | (secondByte & 0x3F) << 0xC | (thirdByte & 0x3F) << 0x6 | (fourthByte & 0x3F)
-            if (tempCodePoint > 0xFFFF && tempCodePoint < 0x110000) {
-              codePoint = tempCodePoint
-            }
-          }
-      }
-    }
-
-    if (codePoint === null) {
-      // we did not generate a valid codePoint so insert a
-      // replacement char (U+FFFD) and advance only 1 byte
-      codePoint = 0xFFFD
-      bytesPerSequence = 1
-    } else if (codePoint > 0xFFFF) {
-      // encode to utf16 (surrogate pair dance)
-      codePoint -= 0x10000
-      res.push(codePoint >>> 10 & 0x3FF | 0xD800)
-      codePoint = 0xDC00 | codePoint & 0x3FF
-    }
-
-    res.push(codePoint)
-    i += bytesPerSequence
-  }
-
-  return decodeCodePointsArray(res)
-}
-
-// Based on http://stackoverflow.com/a/22747272/680742, the browser with
-// the lowest limit is Chrome, with 0x10000 args.
-// We go 1 magnitude less, for safety
-var MAX_ARGUMENTS_LENGTH = 0x1000
-
-function decodeCodePointsArray (codePoints) {
-  var len = codePoints.length
-  if (len <= MAX_ARGUMENTS_LENGTH) {
-    return String.fromCharCode.apply(String, codePoints) // avoid extra slice()
-  }
-
-  // Decode in chunks to avoid "call stack size exceeded".
-  var res = ''
-  var i = 0
-  while (i < len) {
-    res += String.fromCharCode.apply(
-      String,
-      codePoints.slice(i, i += MAX_ARGUMENTS_LENGTH)
-    )
-  }
-  return res
-}
-
-function asciiSlice (buf, start, end) {
-  var ret = ''
-  end = Math.min(buf.length, end)
-
-  for (var i = start; i < end; ++i) {
-    ret += String.fromCharCode(buf[i] & 0x7F)
-  }
-  return ret
-}
-
-function latin1Slice (buf, start, end) {
-  var ret = ''
-  end = Math.min(buf.length, end)
-
-  for (var i = start; i < end; ++i) {
-    ret += String.fromCharCode(buf[i])
-  }
-  return ret
-}
-
-function hexSlice (buf, start, end) {
-  var len = buf.length
-
-  if (!start || start < 0) start = 0
-  if (!end || end < 0 || end > len) end = len
-
-  var out = ''
-  for (var i = start; i < end; ++i) {
-    out += toHex(buf[i])
-  }
-  return out
-}
-
-function utf16leSlice (buf, start, end) {
-  var bytes = buf.slice(start, end)
-  var res = ''
-  for (var i = 0; i < bytes.length; i += 2) {
-    res += String.fromCharCode(bytes[i] + (bytes[i + 1] * 256))
-  }
-  return res
-}
-
-Buffer.prototype.slice = function slice (start, end) {
-  var len = this.length
-  start = ~~start
-  end = end === undefined ? len : ~~end
-
-  if (start < 0) {
-    start += len
-    if (start < 0) start = 0
-  } else if (start > len) {
-    start = len
-  }
-
-  if (end < 0) {
-    end += len
-    if (end < 0) end = 0
-  } else if (end > len) {
-    end = len
-  }
-
-  if (end < start) end = start
-
-  var newBuf = this.subarray(start, end)
-  // Return an augmented `Uint8Array` instance
-  newBuf.__proto__ = Buffer.prototype
-  return newBuf
-}
-
-/*
- * Need to make sure that buffer isn't trying to write out of bounds.
+/**
+ * returns an object of pointer gestures.
+ * @param {DomElement} input - either the dom element to attach events handlers to or the result from baseInteractionsFromEvents
+ * @param {Object} options
+ * @param {Integer} options.multiTapDelay=250  delay between clicks/taps
+ * @param {Integer} options.longPressDelay=250 delay after which we have a 'hold' gesture
+ * @param {Float} options.maxStaticDeltaSqr=100 maximum delta (in pixels squared) above which we are not static ie cursor changed places
+ * @param {Float} options.zoomMultiplier=200 zoomFactor for normalized interactions across browsers
+ * @param {Float} options.pinchThreshold=4000 The minimum amount in pixels the inputs must move until it is fired.
+ * @param {Integer} options.pixelRatio=window.devicePixelRatio or 1 : the pixel ratio to use
+ * @returns {Object}
  */
-function checkOffset (offset, ext, length) {
-  if ((offset % 1) !== 0 || offset < 0) throw new RangeError('offset is not uint')
-  if (offset + ext > length) throw new RangeError('Trying to access beyond buffer length')
-}
+const pointerGestures = (input, options) => {
+  const baseInteractions = 'addEventListener' in input ? baseInteractionsFromEvents(input, options) : input
 
-Buffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert) {
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
-  if (!noAssert) checkOffset(offset, byteLength, this.length)
-
-  var val = this[offset]
-  var mul = 1
-  var i = 0
-  while (++i < byteLength && (mul *= 0x100)) {
-    val += this[offset + i] * mul
+  const defaults = {
+    multiTapDelay: 250, // delay between clicks/taps
+    longPressDelay: 250, // delay after which we have a 'hold'
+    maxStaticDeltaSqr: 100, // maximum delta (in pixels squared) above which we are not static
+    zoomMultiplier: 200, // zoomFactor for normalized interactions across browsers
+    pinchThreshold: 4000, // The minimum amount in pixels the inputs must move until it is fired.
+    pixelRatio: (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1
   }
+  const settings = Object.assign({}, defaults, options)
 
-  return val
-}
+  const press$ = presses(baseInteractions, settings)
+  const holds$ = press$ // longTaps/holds: either HELD leftmouse/pointer or HELD right click
+    .filter((e) => e.timeDelta > settings.longPressDelay)
+    .filter((e) => e.moveDelta.sqrd < settings.maxStaticDeltaSqr) // when the square distance is bigger than this, it is a movement, not a tap
+    // .map(e => e.value)
+  const taps$ = taps(press$, settings)
+  const drags$ = drags(baseInteractions, settings)
+  const zooms$ = zooms(baseInteractions, settings)
 
-Buffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert) {
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
-  if (!noAssert) {
-    checkOffset(offset, byteLength, this.length)
+  // FIXME: use 'press' as higher level above tap & click
+
+  return {
+    press: press$,
+    holds: holds$,
+    taps: taps$,
+    drags: drags$,
+    zooms: zooms$
   }
-
-  var val = this[offset + --byteLength]
-  var mul = 1
-  while (byteLength > 0 && (mul *= 0x100)) {
-    val += this[offset + --byteLength] * mul
-  }
-
-  return val
 }
 
-Buffer.prototype.readUInt8 = function readUInt8 (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 1, this.length)
-  return this[offset]
-}
-
-Buffer.prototype.readUInt16LE = function readUInt16LE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 2, this.length)
-  return this[offset] | (this[offset + 1] << 8)
-}
-
-Buffer.prototype.readUInt16BE = function readUInt16BE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 2, this.length)
-  return (this[offset] << 8) | this[offset + 1]
-}
-
-Buffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 4, this.length)
-
-  return ((this[offset]) |
-      (this[offset + 1] << 8) |
-      (this[offset + 2] << 16)) +
-      (this[offset + 3] * 0x1000000)
-}
-
-Buffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 4, this.length)
-
-  return (this[offset] * 0x1000000) +
-    ((this[offset + 1] << 16) |
-    (this[offset + 2] << 8) |
-    this[offset + 3])
-}
-
-Buffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
-  if (!noAssert) checkOffset(offset, byteLength, this.length)
-
-  var val = this[offset]
-  var mul = 1
-  var i = 0
-  while (++i < byteLength && (mul *= 0x100)) {
-    val += this[offset + i] * mul
-  }
-  mul *= 0x80
-
-  if (val >= mul) val -= Math.pow(2, 8 * byteLength)
-
-  return val
-}
-
-Buffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
-  if (!noAssert) checkOffset(offset, byteLength, this.length)
-
-  var i = byteLength
-  var mul = 1
-  var val = this[offset + --i]
-  while (i > 0 && (mul *= 0x100)) {
-    val += this[offset + --i] * mul
-  }
-  mul *= 0x80
-
-  if (val >= mul) val -= Math.pow(2, 8 * byteLength)
-
-  return val
-}
-
-Buffer.prototype.readInt8 = function readInt8 (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 1, this.length)
-  if (!(this[offset] & 0x80)) return (this[offset])
-  return ((0xff - this[offset] + 1) * -1)
-}
-
-Buffer.prototype.readInt16LE = function readInt16LE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 2, this.length)
-  var val = this[offset] | (this[offset + 1] << 8)
-  return (val & 0x8000) ? val | 0xFFFF0000 : val
-}
-
-Buffer.prototype.readInt16BE = function readInt16BE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 2, this.length)
-  var val = this[offset + 1] | (this[offset] << 8)
-  return (val & 0x8000) ? val | 0xFFFF0000 : val
-}
-
-Buffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 4, this.length)
-
-  return (this[offset]) |
-    (this[offset + 1] << 8) |
-    (this[offset + 2] << 16) |
-    (this[offset + 3] << 24)
-}
-
-Buffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 4, this.length)
-
-  return (this[offset] << 24) |
-    (this[offset + 1] << 16) |
-    (this[offset + 2] << 8) |
-    (this[offset + 3])
-}
-
-Buffer.prototype.readFloatLE = function readFloatLE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 4, this.length)
-  return ieee754.read(this, offset, true, 23, 4)
-}
-
-Buffer.prototype.readFloatBE = function readFloatBE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 4, this.length)
-  return ieee754.read(this, offset, false, 23, 4)
-}
-
-Buffer.prototype.readDoubleLE = function readDoubleLE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 8, this.length)
-  return ieee754.read(this, offset, true, 52, 8)
-}
-
-Buffer.prototype.readDoubleBE = function readDoubleBE (offset, noAssert) {
-  offset = offset >>> 0
-  if (!noAssert) checkOffset(offset, 8, this.length)
-  return ieee754.read(this, offset, false, 52, 8)
-}
-
-function checkInt (buf, value, offset, ext, max, min) {
-  if (!Buffer.isBuffer(buf)) throw new TypeError('"buffer" argument must be a Buffer instance')
-  if (value > max || value < min) throw new RangeError('"value" argument is out of bounds')
-  if (offset + ext > buf.length) throw new RangeError('Index out of range')
-}
-
-Buffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
-  if (!noAssert) {
-    var maxBytes = Math.pow(2, 8 * byteLength) - 1
-    checkInt(this, value, offset, byteLength, maxBytes, 0)
-  }
-
-  var mul = 1
-  var i = 0
-  this[offset] = value & 0xFF
-  while (++i < byteLength && (mul *= 0x100)) {
-    this[offset + i] = (value / mul) & 0xFF
-  }
-
-  return offset + byteLength
-}
-
-Buffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  byteLength = byteLength >>> 0
-  if (!noAssert) {
-    var maxBytes = Math.pow(2, 8 * byteLength) - 1
-    checkInt(this, value, offset, byteLength, maxBytes, 0)
-  }
-
-  var i = byteLength - 1
-  var mul = 1
-  this[offset + i] = value & 0xFF
-  while (--i >= 0 && (mul *= 0x100)) {
-    this[offset + i] = (value / mul) & 0xFF
-  }
-
-  return offset + byteLength
-}
-
-Buffer.prototype.writeUInt8 = function writeUInt8 (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 1, 0xff, 0)
-  this[offset] = (value & 0xff)
-  return offset + 1
-}
-
-Buffer.prototype.writeUInt16LE = function writeUInt16LE (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
-  this[offset] = (value & 0xff)
-  this[offset + 1] = (value >>> 8)
-  return offset + 2
-}
-
-Buffer.prototype.writeUInt16BE = function writeUInt16BE (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
-  this[offset] = (value >>> 8)
-  this[offset + 1] = (value & 0xff)
-  return offset + 2
-}
-
-Buffer.prototype.writeUInt32LE = function writeUInt32LE (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
-  this[offset + 3] = (value >>> 24)
-  this[offset + 2] = (value >>> 16)
-  this[offset + 1] = (value >>> 8)
-  this[offset] = (value & 0xff)
-  return offset + 4
-}
-
-Buffer.prototype.writeUInt32BE = function writeUInt32BE (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
-  this[offset] = (value >>> 24)
-  this[offset + 1] = (value >>> 16)
-  this[offset + 2] = (value >>> 8)
-  this[offset + 3] = (value & 0xff)
-  return offset + 4
-}
-
-Buffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) {
-    var limit = Math.pow(2, (8 * byteLength) - 1)
-
-    checkInt(this, value, offset, byteLength, limit - 1, -limit)
-  }
-
-  var i = 0
-  var mul = 1
-  var sub = 0
-  this[offset] = value & 0xFF
-  while (++i < byteLength && (mul *= 0x100)) {
-    if (value < 0 && sub === 0 && this[offset + i - 1] !== 0) {
-      sub = 1
-    }
-    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF
-  }
-
-  return offset + byteLength
-}
-
-Buffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) {
-    var limit = Math.pow(2, (8 * byteLength) - 1)
-
-    checkInt(this, value, offset, byteLength, limit - 1, -limit)
-  }
-
-  var i = byteLength - 1
-  var mul = 1
-  var sub = 0
-  this[offset + i] = value & 0xFF
-  while (--i >= 0 && (mul *= 0x100)) {
-    if (value < 0 && sub === 0 && this[offset + i + 1] !== 0) {
-      sub = 1
-    }
-    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF
-  }
-
-  return offset + byteLength
-}
-
-Buffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 1, 0x7f, -0x80)
-  if (value < 0) value = 0xff + value + 1
-  this[offset] = (value & 0xff)
-  return offset + 1
-}
-
-Buffer.prototype.writeInt16LE = function writeInt16LE (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
-  this[offset] = (value & 0xff)
-  this[offset + 1] = (value >>> 8)
-  return offset + 2
-}
-
-Buffer.prototype.writeInt16BE = function writeInt16BE (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
-  this[offset] = (value >>> 8)
-  this[offset + 1] = (value & 0xff)
-  return offset + 2
-}
-
-Buffer.prototype.writeInt32LE = function writeInt32LE (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
-  this[offset] = (value & 0xff)
-  this[offset + 1] = (value >>> 8)
-  this[offset + 2] = (value >>> 16)
-  this[offset + 3] = (value >>> 24)
-  return offset + 4
-}
-
-Buffer.prototype.writeInt32BE = function writeInt32BE (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
-  if (value < 0) value = 0xffffffff + value + 1
-  this[offset] = (value >>> 24)
-  this[offset + 1] = (value >>> 16)
-  this[offset + 2] = (value >>> 8)
-  this[offset + 3] = (value & 0xff)
-  return offset + 4
-}
-
-function checkIEEE754 (buf, value, offset, ext, max, min) {
-  if (offset + ext > buf.length) throw new RangeError('Index out of range')
-  if (offset < 0) throw new RangeError('Index out of range')
-}
-
-function writeFloat (buf, value, offset, littleEndian, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) {
-    checkIEEE754(buf, value, offset, 4, 3.4028234663852886e+38, -3.4028234663852886e+38)
-  }
-  ieee754.write(buf, value, offset, littleEndian, 23, 4)
-  return offset + 4
-}
-
-Buffer.prototype.writeFloatLE = function writeFloatLE (value, offset, noAssert) {
-  return writeFloat(this, value, offset, true, noAssert)
-}
-
-Buffer.prototype.writeFloatBE = function writeFloatBE (value, offset, noAssert) {
-  return writeFloat(this, value, offset, false, noAssert)
-}
-
-function writeDouble (buf, value, offset, littleEndian, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert) {
-    checkIEEE754(buf, value, offset, 8, 1.7976931348623157E+308, -1.7976931348623157E+308)
-  }
-  ieee754.write(buf, value, offset, littleEndian, 52, 8)
-  return offset + 8
-}
-
-Buffer.prototype.writeDoubleLE = function writeDoubleLE (value, offset, noAssert) {
-  return writeDouble(this, value, offset, true, noAssert)
-}
-
-Buffer.prototype.writeDoubleBE = function writeDoubleBE (value, offset, noAssert) {
-  return writeDouble(this, value, offset, false, noAssert)
-}
-
-// copy(targetBuffer, targetStart=0, sourceStart=0, sourceEnd=buffer.length)
-Buffer.prototype.copy = function copy (target, targetStart, start, end) {
-  if (!Buffer.isBuffer(target)) throw new TypeError('argument should be a Buffer')
-  if (!start) start = 0
-  if (!end && end !== 0) end = this.length
-  if (targetStart >= target.length) targetStart = target.length
-  if (!targetStart) targetStart = 0
-  if (end > 0 && end < start) end = start
-
-  // Copy 0 bytes; we're done
-  if (end === start) return 0
-  if (target.length === 0 || this.length === 0) return 0
-
-  // Fatal error conditions
-  if (targetStart < 0) {
-    throw new RangeError('targetStart out of bounds')
-  }
-  if (start < 0 || start >= this.length) throw new RangeError('Index out of range')
-  if (end < 0) throw new RangeError('sourceEnd out of bounds')
-
-  // Are we oob?
-  if (end > this.length) end = this.length
-  if (target.length - targetStart < end - start) {
-    end = target.length - targetStart + start
-  }
-
-  var len = end - start
-
-  if (this === target && typeof Uint8Array.prototype.copyWithin === 'function') {
-    // Use built-in when available, missing from IE11
-    this.copyWithin(targetStart, start, end)
-  } else if (this === target && start < targetStart && targetStart < end) {
-    // descending copy from end
-    for (var i = len - 1; i >= 0; --i) {
-      target[i + targetStart] = this[i + start]
-    }
-  } else {
-    Uint8Array.prototype.set.call(
-      target,
-      this.subarray(start, end),
-      targetStart
-    )
-  }
-
-  return len
-}
-
-// Usage:
-//    buffer.fill(number[, offset[, end]])
-//    buffer.fill(buffer[, offset[, end]])
-//    buffer.fill(string[, offset[, end]][, encoding])
-Buffer.prototype.fill = function fill (val, start, end, encoding) {
-  // Handle string cases:
-  if (typeof val === 'string') {
-    if (typeof start === 'string') {
-      encoding = start
-      start = 0
-      end = this.length
-    } else if (typeof end === 'string') {
-      encoding = end
-      end = this.length
-    }
-    if (encoding !== undefined && typeof encoding !== 'string') {
-      throw new TypeError('encoding must be a string')
-    }
-    if (typeof encoding === 'string' && !Buffer.isEncoding(encoding)) {
-      throw new TypeError('Unknown encoding: ' + encoding)
-    }
-    if (val.length === 1) {
-      var code = val.charCodeAt(0)
-      if ((encoding === 'utf8' && code < 128) ||
-          encoding === 'latin1') {
-        // Fast path: If `val` fits into a single byte, use that numeric value.
-        val = code
-      }
-    }
-  } else if (typeof val === 'number') {
-    val = val & 255
-  }
-
-  // Invalid ranges are not set to a default, so can range check early.
-  if (start < 0 || this.length < start || this.length < end) {
-    throw new RangeError('Out of range index')
-  }
-
-  if (end <= start) {
-    return this
-  }
-
-  start = start >>> 0
-  end = end === undefined ? this.length : end >>> 0
-
-  if (!val) val = 0
-
-  var i
-  if (typeof val === 'number') {
-    for (i = start; i < end; ++i) {
-      this[i] = val
-    }
-  } else {
-    var bytes = Buffer.isBuffer(val)
-      ? val
-      : Buffer.from(val, encoding)
-    var len = bytes.length
-    if (len === 0) {
-      throw new TypeError('The value "' + val +
-        '" is invalid for argument "value"')
-    }
-    for (i = 0; i < end - start; ++i) {
-      this[i + start] = bytes[i % len]
-    }
-  }
-
-  return this
-}
-
-// HELPER FUNCTIONS
-// ================
-
-var INVALID_BASE64_RE = /[^+/0-9A-Za-z-_]/g
-
-function base64clean (str) {
-  // Node takes equal signs as end of the Base64 encoding
-  str = str.split('=')[0]
-  // Node strips out invalid characters like \n and \t from the string, base64-js does not
-  str = str.trim().replace(INVALID_BASE64_RE, '')
-  // Node converts strings with length < 2 to ''
-  if (str.length < 2) return ''
-  // Node allows for non-padded base64 strings (missing trailing ===), base64-js does not
-  while (str.length % 4 !== 0) {
-    str = str + '='
-  }
-  return str
-}
-
-function toHex (n) {
-  if (n < 16) return '0' + n.toString(16)
-  return n.toString(16)
-}
-
-function utf8ToBytes (string, units) {
-  units = units || Infinity
-  var codePoint
-  var length = string.length
-  var leadSurrogate = null
-  var bytes = []
-
-  for (var i = 0; i < length; ++i) {
-    codePoint = string.charCodeAt(i)
-
-    // is surrogate component
-    if (codePoint > 0xD7FF && codePoint < 0xE000) {
-      // last char was a lead
-      if (!leadSurrogate) {
-        // no lead yet
-        if (codePoint > 0xDBFF) {
-          // unexpected trail
-          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
-          continue
-        } else if (i + 1 === length) {
-          // unpaired lead
-          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
-          continue
+module.exports = { baseInteractionsFromEvents, pointerGestures }
+
+},{"./drags":483,"./presses":485,"./taps":486,"./utils":487,"./zooms":488,"most":451}],485:[function(require,module,exports){
+const { just, merge } = require('most')
+const { exists } = require('./utils')
+
+/* alternative "clicks" (ie mouseDown -> mouseUp ) implementation, with more fine grained control */
+const basePresses = ({ mouseDowns$, mouseUps$, mouseMoves$, touchStarts$, touchEnds$, touchMoves$ }, settings) => {
+  touchMoves$ = touchMoves$.filter((t) => t.touches.length === 1)
+
+  const starts$ = merge(mouseDowns$, touchStarts$) // mouse & touch interactions starts
+  const ends$ = merge(mouseUps$, touchEnds$) // mouse & touch interactions ends
+  // only doing any "clicks if the time between mDOWN and mUP is below longpressDelay"
+  // any small mouseMove is ignored (shaky hands)
+
+  return starts$.timestamp()
+    .flatMap((downEvent) => merge(just(downEvent), ends$.take(1).timestamp()))
+    .loop((acc, current) => {
+      let result
+      if (acc.length === 1) {
+        const timeDelta = current.time - acc[0].time
+
+        const curX = 'touches' in current.value ? current.value.changedTouches[0].pageX : current.value.pageX//* pixelRatio
+        const curY = 'touches' in current.value ? current.value.changedTouches[0].pageY : current.value.pageY//* pixelRatio
+
+        const prevX = 'touches' in acc[0].value ? acc[0].value.touches[0].pageX : acc[0].value.pageX
+        const prevY = 'touches' in acc[0].value ? acc[0].value.touches[0].pageY : acc[0].value.pageY
+
+        let delta = [curX - prevX, curY - prevY] // FIXME: duplicate of mouseDrags !
+        delta = delta[0] * delta[0] + delta[1] * delta[1] // squared distance
+        const moveDelta = {
+          x: prevX - curX,
+          y: curY - prevY,
+          sqrd: delta
         }
 
-        // valid lead
-        leadSurrogate = codePoint
-
-        continue
+        result = { value: current.value, originalEvent: current.value, timeDelta, moveDelta, x: curX, y: curY }
+        acc = []
+      } else {
+        acc.push(current)
       }
+      return { seed: acc, value: result }
+    }, [])
+    .filter(exists)
+    .filter((x) => x.value !== undefined)
+    .multicast()
+}
 
-      // 2 leads in a row
-      if (codePoint < 0xDC00) {
-        if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
-        leadSurrogate = codePoint
-        continue
+const presses = (baseInteractions, settings) => {
+  const presses$ = basePresses(baseInteractions, settings)
+
+  /*
+  // exploring of more composition based system : much clearer, but needs work
+
+  // Imagine map and filter are curried
+  const mapc = curry2(map)
+  const filterc = curry2(filter)
+
+  const deltaBelowMax = x => x.moveDelta < maxStaticDeltaSqr
+  const intervalBelowLongPress = x => x.interval <= longPressDelay
+  const validButton = event => 'button' in event && event.button === 0
+  const exists = x => x !== undefined
+
+  const pluckValue = x => x.value
+  const pluckList = x => x.list
+  const first = x => x[0]
+
+  const shortTaps = compose(
+    filterc(deltaBelowMax),
+    filterc(intervalBelowLongPress),
+    mapc(pluckValue),
+    filterc(validButton)
+  )
+
+  const firstInList = compose(
+    mapc(pluckList),
+    mapc(first)
+  )
+
+  //const tapsByNumber = tapCount => compose(filterc(x => x.nb === tapCount), firstInList()) */
+
+  return presses$
+}
+
+module.exports = { presses }
+
+},{"./utils":487,"most":451}],486:[function(require,module,exports){
+const { exists } = require('./utils')
+
+/**
+ * tap on screen , either via gestures or clicks,
+ * IF the movement was short (settable)
+ * AND there was little movement only (settable)
+ * @param  {Number} longPressDelay any tap shorter than this time is a short one
+ * @param  {Number} maxStaticDeltaSqr  when the square distance is bigger than this, it is a movement, not a tap
+ * @param  {Number} multiTapDelay  delay between taps for multi tap detection
+ */
+const taps = (presses$, settings) => {
+  const { longPressDelay, maxStaticDeltaSqr, multiTapDelay } = settings
+  const taps$ = presses$
+    .filter((e) => e.timeDelta <= longPressDelay) // any tap shorter than this time is a short one
+    .filter((e) => e.moveDelta.sqrd < maxStaticDeltaSqr) // when the square distance is bigger than this, it is a movement, not a tap
+    .map((data) => ({ type: 'data', data }))
+    .merge(presses$.debounce(multiTapDelay).map((data) => ({ type: 'reset' })))
+    .loop((seed, { type, data }) => {
+      let value
+      if (type === 'data') {
+        seed.push(data)
+      } else {
+        value = seed
+        seed = []
       }
+      return { seed, value }
+    }, [])
+    .filter(exists)
+    // .buffer(function () { return taps$.debounce(multiTapDelay) })// buffer all inputs, and emit at then end of multiTapDelay
+    .map((list) => ({ list: list, nb: list.length }))
+    .multicast()
 
-      // valid surrogate pair
-      codePoint = (leadSurrogate - 0xD800 << 10 | codePoint - 0xDC00) + 0x10000
-    } else if (leadSurrogate) {
-      // valid bmp char, but last char was a lead
-      if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
-    }
+  return taps$
+}
 
-    leadSurrogate = null
+module.exports = { taps }
 
-    // encode utf8
-    if (codePoint < 0x80) {
-      if ((units -= 1) < 0) break
-      bytes.push(codePoint)
-    } else if (codePoint < 0x800) {
-      if ((units -= 2) < 0) break
-      bytes.push(
-        codePoint >> 0x6 | 0xC0,
-        codePoint & 0x3F | 0x80
-      )
-    } else if (codePoint < 0x10000) {
-      if ((units -= 3) < 0) break
-      bytes.push(
-        codePoint >> 0xC | 0xE0,
-        codePoint >> 0x6 & 0x3F | 0x80,
-        codePoint & 0x3F | 0x80
-      )
-    } else if (codePoint < 0x110000) {
-      if ((units -= 4) < 0) break
-      bytes.push(
-        codePoint >> 0x12 | 0xF0,
-        codePoint >> 0xC & 0x3F | 0x80,
-        codePoint >> 0x6 & 0x3F | 0x80,
-        codePoint & 0x3F | 0x80
-      )
-    } else {
-      throw new Error('Invalid code point')
-    }
+},{"./utils":487}],487:[function(require,module,exports){
+const { empty, continueWith } = require('most')
+
+// for most.js
+const repeat = (n, stream) => n === 0
+  ? empty()
+  : n === 1
+    ? stream
+    : continueWith(() => repeat(n - 1, stream), stream)
+
+// see https://github.com/cujojs/most/issues/20
+
+// this is in another package/module normally
+const preventDefault = (event) => {
+  event.preventDefault()
+  return event
+}
+
+/* determine if distance was 'enough' to consider it a ...movement */
+const isMoving = (moveDelta, deltaSqr) => true
+// {
+//   let distSqr = (moveDelta.x * moveDelta.x + moveDelta.y * moveDelta.y)
+//   let isMoving = (distSqr > deltaSqr)
+//   return isMoving
+// }
+
+const normalizeWheel = (event) => {
+  let delta = { x: 0, y: 0 }
+  if (event.wheelDelta) { // WebKit / Opera / Explorer 9
+    delta = event.wheelDelta
+  } else if (event.detail) { // Firefox older
+    delta = -event.detail
+  } else if (event.deltaY) { // Firefox
+    delta = -event.deltaY
+  }
+  delta = delta >= 0 ? 1 : -1
+  return delta
+}
+
+const exists = (data) => data !== null && data !== undefined
+
+module.exports = { repeat, preventDefault, isMoving, normalizeWheel, exists }
+
+},{"most":451}],488:[function(require,module,exports){
+const { merge } = require('most')
+
+const pinchZooms = ({ touchStarts$, touchMoves$, touchEnds$ }, settings) => {
+  const { pixelRatio, pinchThreshold } = settings
+  // generic custom gesture handling
+  // very very vaguely based on http://stackoverflow.com/questions/11183174/simplest-way-to-detect-a-pinch
+  return touchStarts$
+    .filter((t) => t.touches.length === 2)
+    .flatMap((ts) => {
+      const startX1 = ts.touches[0].pageX * pixelRatio
+      const startY1 = ts.touches[0].pageY * pixelRatio
+
+      const startX2 = ts.touches[1].pageX * pixelRatio
+      const startY2 = ts.touches[1].pageY * pixelRatio
+
+      const startDist = ((startX1 - startX2) * (startX1 - startX2)) + ((startY1 - startY2) * (startY1 - startY2))
+
+      return touchMoves$
+        .tap((e) => e.preventDefault())
+        .filter((t) => t.touches.length === 2)
+        .map((e) => {
+          const curX1 = e.touches[0].pageX * pixelRatio
+          const curY1 = e.touches[0].pageY * pixelRatio
+
+          const curX2 = e.touches[1].pageX * pixelRatio
+          const curY2 = e.touches[1].pageY * pixelRatio
+
+          const currentDist = ((curX1 - curX2) * (curX1 - curX2)) + ((curY1 - curY2) * (curY1 - curY2))
+          return currentDist
+        })
+        .loop((prev, cur) => {
+          if (prev) {
+            if (Math.abs(cur - prev) < pinchThreshold) {
+              return { seed: cur, value: undefined }
+            }
+            return { seed: cur, value: cur - prev }
+          }
+          return { seed: cur, value: cur - startDist }
+        }, undefined)
+        .filter((x) => x !== undefined)
+        .map((x) => x * 0.000003) // arbitrary, in order to harmonise desktop /mobile up to a point
+        /* .map(function (e) {
+          const scale = e > 0 ? Math.sqrt(e) : -Math.sqrt(Math.abs(e))
+          return scale
+        }) */
+        .takeUntil(touchEnds$)
+    })
+}
+
+const zooms = ({ touchStarts$, touchMoves$, touchEnds$, wheel$ }, settings) => {
+  const zooms$ = merge(
+    pinchZooms({ touchStarts$, touchMoves$, touchEnds$ }, settings), // for Android (no gestureXX events)
+    wheel$
+  )
+    .map((x) => x * settings.zoomMultiplier)
+  return zooms$
+}
+
+module.exports = { pinchZooms, zooms }
+
+},{"most":451}],489:[function(require,module,exports){
+(function (global, factory) {
+  typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports, require('@most/prelude')) :
+  typeof define === 'function' && define.amd ? define(['exports', '@most/prelude'], factory) :
+  (factory((global.mostMulticast = global.mostMulticast || {}),global.mostPrelude));
+}(this, (function (exports,_most_prelude) { 'use strict';
+
+var MulticastDisposable = function MulticastDisposable (source, sink) {
+  this.source = source
+  this.sink = sink
+  this.disposed = false
+};
+
+MulticastDisposable.prototype.dispose = function dispose () {
+  if (this.disposed) {
+    return
+  }
+  this.disposed = true
+  var remaining = this.source.remove(this.sink)
+  return remaining === 0 && this.source._dispose()
+};
+
+function tryEvent (t, x, sink) {
+  try {
+    sink.event(t, x)
+  } catch (e) {
+    sink.error(t, e)
+  }
+}
+
+function tryEnd (t, x, sink) {
+  try {
+    sink.end(t, x)
+  } catch (e) {
+    sink.error(t, e)
+  }
+}
+
+var dispose = function (disposable) { return disposable.dispose(); }
+
+var emptyDisposable = {
+  dispose: function dispose$1 () {}
+}
+
+var MulticastSource = function MulticastSource (source) {
+  this.source = source
+  this.sinks = []
+  this._disposable = emptyDisposable
+};
+
+MulticastSource.prototype.run = function run (sink, scheduler) {
+  var n = this.add(sink)
+  if (n === 1) {
+    this._disposable = this.source.run(this, scheduler)
+  }
+  return new MulticastDisposable(this, sink)
+};
+
+MulticastSource.prototype._dispose = function _dispose () {
+  var disposable = this._disposable
+  this._disposable = emptyDisposable
+  return Promise.resolve(disposable).then(dispose)
+};
+
+MulticastSource.prototype.add = function add (sink) {
+  this.sinks = _most_prelude.append(sink, this.sinks)
+  return this.sinks.length
+};
+
+MulticastSource.prototype.remove = function remove$1 (sink) {
+  var i = _most_prelude.findIndex(sink, this.sinks)
+  // istanbul ignore next
+  if (i >= 0) {
+    this.sinks = _most_prelude.remove(i, this.sinks)
   }
 
-  return bytes
-}
+  return this.sinks.length
+};
 
-function asciiToBytes (str) {
-  var byteArray = []
-  for (var i = 0; i < str.length; ++i) {
-    // Node's code seems to be doing this and not & 0x7F..
-    byteArray.push(str.charCodeAt(i) & 0xFF)
+MulticastSource.prototype.event = function event (time, value) {
+  var s = this.sinks
+  if (s.length === 1) {
+    return s[0].event(time, value)
   }
-  return byteArray
+  for (var i = 0; i < s.length; ++i) {
+    tryEvent(time, value, s[i])
+  }
+};
+
+MulticastSource.prototype.end = function end (time, value) {
+  var s = this.sinks
+  for (var i = 0; i < s.length; ++i) {
+    tryEnd(time, value, s[i])
+  }
+};
+
+MulticastSource.prototype.error = function error (time, err) {
+  var s = this.sinks
+  for (var i = 0; i < s.length; ++i) {
+    s[i].error(time, err)
+  }
+};
+
+function multicast (stream) {
+  var source = stream.source
+  return source instanceof MulticastSource
+    ? stream
+    : new stream.constructor(new MulticastSource(source))
 }
 
-function utf16leToBytes (str, units) {
-  var c, hi, lo
-  var byteArray = []
-  for (var i = 0; i < str.length; ++i) {
-    if ((units -= 2) < 0) break
+exports['default'] = multicast;
+exports.MulticastSource = MulticastSource;
 
-    c = str.charCodeAt(i)
-    hi = c >> 8
-    lo = c % 256
-    byteArray.push(lo)
-    byteArray.push(hi)
+Object.defineProperty(exports, '__esModule', { value: true });
+
+})));
+
+
+},{"@most/prelude":490}],490:[function(require,module,exports){
+(function (global, factory) {
+  typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
+  typeof define === 'function' && define.amd ? define(['exports'], factory) :
+  (global = global || self, factory(global.mostPrelude = {}));
+}(this, (function (exports) { 'use strict';
+
+  /** @license MIT License (c) copyright 2010-2016 original author or authors */
+  // Non-mutating array operations
+  /**
+   * a with x prepended
+   */
+  function cons(x, a) {
+      var l = a.length;
+      var b = new Array(l + 1);
+      b[0] = x;
+      for (var i = 0; i < l; ++i) {
+          b[i + 1] = a[i];
+      }
+      return b;
+  }
+  /**
+   * a with x appended
+   */
+  function append(x, a) {
+      var l = a.length;
+      var b = new Array(l + 1);
+      for (var i = 0; i < l; ++i) {
+          b[i] = a[i];
+      }
+      b[l] = x;
+      return b;
+  }
+  /**
+   * Concats two `ArrayLike`s
+   */
+  function concat(a, b) {
+      var al = a.length;
+      var bl = b.length;
+      var r = new Array(al + bl);
+      var i = 0;
+      for (i = 0; i < al; i++) {
+          r[i] = a[i];
+      }
+      for (var j = 0; j < bl; j++) {
+          r[i++] = b[j];
+      }
+      return r;
+  }
+  //
+  /**
+   * drop first n elements
+   */
+  function drop(n, a) {
+      if (n < 0) {
+          throw new TypeError('n must be >= 0');
+      }
+      var l = a.length;
+      if (n === 0 || l === 0) {
+          return a;
+      }
+      if (n >= l) {
+          return [];
+      }
+      return unsafeDrop(n, a, l - n);
+  }
+  /**
+   * Internal helper for drop
+   */
+  function unsafeDrop(n, a, l) {
+      var b = new Array(l);
+      for (var i = 0; i < l; ++i) {
+          b[i] = a[n + i];
+      }
+      return b;
+  }
+  /**
+   * drop head element
+   */
+  function tail(a) {
+      return drop(1, a);
+  }
+  /**
+   * duplicate a (shallow duplication)
+   */
+  function copy(a) {
+      var l = a.length;
+      var b = new Array(l);
+      for (var i = 0; i < l; ++i) {
+          b[i] = a[i];
+      }
+      return b;
+  }
+  /**
+   * transform each element with f
+   */
+  function map(f, a) {
+      var l = a.length;
+      var b = new Array(l);
+      for (var i = 0; i < l; ++i) {
+          b[i] = f(a[i]);
+      }
+      return b;
+  }
+  /**
+   * accumulate via left-fold
+   */
+  function reduce(f, z, a) {
+      var r = z;
+      for (var i = 0, l = a.length; i < l; ++i) {
+          r = f(r, a[i], i);
+      }
+      return r;
+  }
+  /**
+   * replace element at index
+   */
+  function replace(x, i, a) {
+      if (i < 0) {
+          throw new TypeError('i must be >= 0');
+      }
+      var l = a.length;
+      var b = new Array(l);
+      for (var j = 0; j < l; ++j) {
+          b[j] = i === j ? x : a[j];
+      }
+      return b;
+  }
+  /**
+   * remove element at index
+   * @throws
+   */
+  function remove(i, a) {
+      if (i < 0) {
+          throw new TypeError('i must be >= 0');
+      }
+      var l = a.length;
+      if (l === 0 || i >= l) { // exit early if index beyond end of array
+          return a;
+      }
+      if (l === 1) { // exit early if index in bounds and length === 1
+          return [];
+      }
+      return unsafeRemove(i, a, l - 1);
+  }
+  /**
+   * Internal helper to remove element at index
+   */
+  function unsafeRemove(i, a, l) {
+      var b = new Array(l);
+      var j;
+      for (j = 0; j < i; ++j) {
+          b[j] = a[j];
+      }
+      for (j = i; j < l; ++j) {
+          b[j] = a[j + 1];
+      }
+      return b;
+  }
+  /**
+   * remove all elements matching a predicate
+   * @deprecated
+   */
+  function removeAll(f, a) {
+      var l = a.length;
+      var b = new Array(l);
+      var j = 0;
+      for (var x = void 0, i = 0; i < l; ++i) {
+          x = a[i];
+          if (!f(x)) {
+              b[j] = x;
+              ++j;
+          }
+      }
+      b.length = j;
+      return b;
+  }
+  /**
+   * find index of x in a, from the left
+   */
+  function findIndex(x, a) {
+      for (var i = 0, l = a.length; i < l; ++i) {
+          if (x === a[i]) {
+              return i;
+          }
+      }
+      return -1;
+  }
+  /**
+   * Return true iff x is array-like
+   */
+  function isArrayLike(x) {
+      return x != null && typeof x.length === 'number' && typeof x !== 'function';
   }
 
-  return byteArray
-}
-
-function base64ToBytes (str) {
-  return base64.toByteArray(base64clean(str))
-}
-
-function blitBuffer (src, dst, offset, length) {
-  for (var i = 0; i < length; ++i) {
-    if ((i + offset >= dst.length) || (i >= src.length)) break
-    dst[i + offset] = src[i]
+  /** @license MIT License (c) copyright 2010-2016 original author or authors */
+  var id = function (x) { return x; };
+  var compose = function (f, g) { return function (x) { return f(g(x)); }; };
+  var apply = function (f, x) { return f(x); };
+  function curry2(f) {
+      function curried(a, b) {
+          switch (arguments.length) {
+              case 0: return curried;
+              case 1: return function (b) { return f(a, b); };
+              default: return f(a, b);
+          }
+      }
+      return curried;
   }
-  return i
-}
+  function curry3(f) {
+      function curried(a, b, c) {
+          switch (arguments.length) {
+              case 0: return curried;
+              case 1: return curry2(function (b, c) { return f(a, b, c); });
+              case 2: return function (c) { return f(a, b, c); };
+              default: return f(a, b, c);
+          }
+      }
+      return curried;
+  }
+  function curry4(f) {
+      function curried(a, b, c, d) {
+          switch (arguments.length) {
+              case 0: return curried;
+              case 1: return curry3(function (b, c, d) { return f(a, b, c, d); });
+              case 2: return curry2(function (c, d) { return f(a, b, c, d); });
+              case 3: return function (d) { return f(a, b, c, d); };
+              default: return f(a, b, c, d);
+          }
+      }
+      return curried;
+  }
 
-// ArrayBuffer or Uint8Array objects from other contexts (i.e. iframes) do not pass
-// the `instanceof` check but they should be treated as of that type.
-// See: https://github.com/feross/buffer/issues/166
-function isInstance (obj, type) {
-  return obj instanceof type ||
-    (obj != null && obj.constructor != null && obj.constructor.name != null &&
-      obj.constructor.name === type.name)
-}
-function numberIsNaN (obj) {
-  // For IE11 support
-  return obj !== obj // eslint-disable-line no-self-compare
-}
+  exports.append = append;
+  exports.apply = apply;
+  exports.compose = compose;
+  exports.concat = concat;
+  exports.cons = cons;
+  exports.copy = copy;
+  exports.curry2 = curry2;
+  exports.curry3 = curry3;
+  exports.curry4 = curry4;
+  exports.drop = drop;
+  exports.findIndex = findIndex;
+  exports.id = id;
+  exports.isArrayLike = isArrayLike;
+  exports.map = map;
+  exports.reduce = reduce;
+  exports.remove = remove;
+  exports.removeAll = removeAll;
+  exports.replace = replace;
+  exports.tail = tail;
 
-}).call(this)}).call(this,require("buffer").Buffer)
-},{"base64-js":413,"buffer":415,"ieee754":506}],416:[function(require,module,exports){
-module.exports = {
-  "100": "Continue",
-  "101": "Switching Protocols",
-  "102": "Processing",
-  "200": "OK",
-  "201": "Created",
-  "202": "Accepted",
-  "203": "Non-Authoritative Information",
-  "204": "No Content",
-  "205": "Reset Content",
-  "206": "Partial Content",
-  "207": "Multi-Status",
-  "208": "Already Reported",
-  "226": "IM Used",
-  "300": "Multiple Choices",
-  "301": "Moved Permanently",
-  "302": "Found",
-  "303": "See Other",
-  "304": "Not Modified",
-  "305": "Use Proxy",
-  "307": "Temporary Redirect",
-  "308": "Permanent Redirect",
-  "400": "Bad Request",
-  "401": "Unauthorized",
-  "402": "Payment Required",
-  "403": "Forbidden",
-  "404": "Not Found",
-  "405": "Method Not Allowed",
-  "406": "Not Acceptable",
-  "407": "Proxy Authentication Required",
-  "408": "Request Timeout",
-  "409": "Conflict",
-  "410": "Gone",
-  "411": "Length Required",
-  "412": "Precondition Failed",
-  "413": "Payload Too Large",
-  "414": "URI Too Long",
-  "415": "Unsupported Media Type",
-  "416": "Range Not Satisfiable",
-  "417": "Expectation Failed",
-  "418": "I'm a teapot",
-  "421": "Misdirected Request",
-  "422": "Unprocessable Entity",
-  "423": "Locked",
-  "424": "Failed Dependency",
-  "425": "Unordered Collection",
-  "426": "Upgrade Required",
-  "428": "Precondition Required",
-  "429": "Too Many Requests",
-  "431": "Request Header Fields Too Large",
-  "451": "Unavailable For Legal Reasons",
-  "500": "Internal Server Error",
-  "501": "Not Implemented",
-  "502": "Bad Gateway",
-  "503": "Service Unavailable",
-  "504": "Gateway Timeout",
-  "505": "HTTP Version Not Supported",
-  "506": "Variant Also Negotiates",
-  "507": "Insufficient Storage",
-  "508": "Loop Detected",
-  "509": "Bandwidth Limit Exceeded",
-  "510": "Not Extended",
-  "511": "Network Authentication Required"
-}
+  Object.defineProperty(exports, '__esModule', { value: true });
 
-},{}],417:[function(require,module,exports){
+})));
+
+
+},{}],491:[function(require,module,exports){
+
+},{}],492:[function(require,module,exports){
 'use strict';
 
 var GetIntrinsic = require('get-intrinsic');
@@ -20635,7 +25399,7 @@ module.exports = function callBoundIntrinsic(name, allowMissing) {
 	return intrinsic;
 };
 
-},{"./":418,"get-intrinsic":426}],418:[function(require,module,exports){
+},{"./":493,"get-intrinsic":500}],493:[function(require,module,exports){
 'use strict';
 
 var bind = require('function-bind');
@@ -20684,7 +25448,7 @@ if ($defineProperty) {
 	module.exports.apply = applyBind;
 }
 
-},{"function-bind":425,"get-intrinsic":426}],419:[function(require,module,exports){
+},{"function-bind":499,"get-intrinsic":500}],494:[function(require,module,exports){
 var transform = require('./lib/projectMat4')
 
 module.exports = unproject
@@ -20725,7 +25489,7 @@ function unproject (out, vec, viewport, invProjectionView) {
   return transform(out, out, invProjectionView)
 }
 
-},{"./lib/projectMat4":420}],420:[function(require,module,exports){
+},{"./lib/projectMat4":495}],495:[function(require,module,exports){
 module.exports = project
 
 /**
@@ -20757,7 +25521,7 @@ function project (out, vec, m) {
   return out
 }
 
-},{}],421:[function(require,module,exports){
+},{}],496:[function(require,module,exports){
 
 /**
  * Expose `Emitter`.
@@ -20934,506 +25698,7 @@ Emitter.prototype.hasListeners = function(event){
   return !! this.listeners(event).length;
 };
 
-},{}],422:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-var R = typeof Reflect === 'object' ? Reflect : null
-var ReflectApply = R && typeof R.apply === 'function'
-  ? R.apply
-  : function ReflectApply(target, receiver, args) {
-    return Function.prototype.apply.call(target, receiver, args);
-  }
-
-var ReflectOwnKeys
-if (R && typeof R.ownKeys === 'function') {
-  ReflectOwnKeys = R.ownKeys
-} else if (Object.getOwnPropertySymbols) {
-  ReflectOwnKeys = function ReflectOwnKeys(target) {
-    return Object.getOwnPropertyNames(target)
-      .concat(Object.getOwnPropertySymbols(target));
-  };
-} else {
-  ReflectOwnKeys = function ReflectOwnKeys(target) {
-    return Object.getOwnPropertyNames(target);
-  };
-}
-
-function ProcessEmitWarning(warning) {
-  if (console && console.warn) console.warn(warning);
-}
-
-var NumberIsNaN = Number.isNaN || function NumberIsNaN(value) {
-  return value !== value;
-}
-
-function EventEmitter() {
-  EventEmitter.init.call(this);
-}
-module.exports = EventEmitter;
-module.exports.once = once;
-
-// Backwards-compat with node 0.10.x
-EventEmitter.EventEmitter = EventEmitter;
-
-EventEmitter.prototype._events = undefined;
-EventEmitter.prototype._eventsCount = 0;
-EventEmitter.prototype._maxListeners = undefined;
-
-// By default EventEmitters will print a warning if more than 10 listeners are
-// added to it. This is a useful default which helps finding memory leaks.
-var defaultMaxListeners = 10;
-
-function checkListener(listener) {
-  if (typeof listener !== 'function') {
-    throw new TypeError('The "listener" argument must be of type Function. Received type ' + typeof listener);
-  }
-}
-
-Object.defineProperty(EventEmitter, 'defaultMaxListeners', {
-  enumerable: true,
-  get: function() {
-    return defaultMaxListeners;
-  },
-  set: function(arg) {
-    if (typeof arg !== 'number' || arg < 0 || NumberIsNaN(arg)) {
-      throw new RangeError('The value of "defaultMaxListeners" is out of range. It must be a non-negative number. Received ' + arg + '.');
-    }
-    defaultMaxListeners = arg;
-  }
-});
-
-EventEmitter.init = function() {
-
-  if (this._events === undefined ||
-      this._events === Object.getPrototypeOf(this)._events) {
-    this._events = Object.create(null);
-    this._eventsCount = 0;
-  }
-
-  this._maxListeners = this._maxListeners || undefined;
-};
-
-// Obviously not all Emitters should be limited to 10. This function allows
-// that to be increased. Set to zero for unlimited.
-EventEmitter.prototype.setMaxListeners = function setMaxListeners(n) {
-  if (typeof n !== 'number' || n < 0 || NumberIsNaN(n)) {
-    throw new RangeError('The value of "n" is out of range. It must be a non-negative number. Received ' + n + '.');
-  }
-  this._maxListeners = n;
-  return this;
-};
-
-function _getMaxListeners(that) {
-  if (that._maxListeners === undefined)
-    return EventEmitter.defaultMaxListeners;
-  return that._maxListeners;
-}
-
-EventEmitter.prototype.getMaxListeners = function getMaxListeners() {
-  return _getMaxListeners(this);
-};
-
-EventEmitter.prototype.emit = function emit(type) {
-  var args = [];
-  for (var i = 1; i < arguments.length; i++) args.push(arguments[i]);
-  var doError = (type === 'error');
-
-  var events = this._events;
-  if (events !== undefined)
-    doError = (doError && events.error === undefined);
-  else if (!doError)
-    return false;
-
-  // If there is no 'error' event listener then throw.
-  if (doError) {
-    var er;
-    if (args.length > 0)
-      er = args[0];
-    if (er instanceof Error) {
-      // Note: The comments on the `throw` lines are intentional, they show
-      // up in Node's output if this results in an unhandled exception.
-      throw er; // Unhandled 'error' event
-    }
-    // At least give some kind of context to the user
-    var err = new Error('Unhandled error.' + (er ? ' (' + er.message + ')' : ''));
-    err.context = er;
-    throw err; // Unhandled 'error' event
-  }
-
-  var handler = events[type];
-
-  if (handler === undefined)
-    return false;
-
-  if (typeof handler === 'function') {
-    ReflectApply(handler, this, args);
-  } else {
-    var len = handler.length;
-    var listeners = arrayClone(handler, len);
-    for (var i = 0; i < len; ++i)
-      ReflectApply(listeners[i], this, args);
-  }
-
-  return true;
-};
-
-function _addListener(target, type, listener, prepend) {
-  var m;
-  var events;
-  var existing;
-
-  checkListener(listener);
-
-  events = target._events;
-  if (events === undefined) {
-    events = target._events = Object.create(null);
-    target._eventsCount = 0;
-  } else {
-    // To avoid recursion in the case that type === "newListener"! Before
-    // adding it to the listeners, first emit "newListener".
-    if (events.newListener !== undefined) {
-      target.emit('newListener', type,
-                  listener.listener ? listener.listener : listener);
-
-      // Re-assign `events` because a newListener handler could have caused the
-      // this._events to be assigned to a new object
-      events = target._events;
-    }
-    existing = events[type];
-  }
-
-  if (existing === undefined) {
-    // Optimize the case of one listener. Don't need the extra array object.
-    existing = events[type] = listener;
-    ++target._eventsCount;
-  } else {
-    if (typeof existing === 'function') {
-      // Adding the second element, need to change to array.
-      existing = events[type] =
-        prepend ? [listener, existing] : [existing, listener];
-      // If we've already got an array, just append.
-    } else if (prepend) {
-      existing.unshift(listener);
-    } else {
-      existing.push(listener);
-    }
-
-    // Check for listener leak
-    m = _getMaxListeners(target);
-    if (m > 0 && existing.length > m && !existing.warned) {
-      existing.warned = true;
-      // No error code for this since it is a Warning
-      // eslint-disable-next-line no-restricted-syntax
-      var w = new Error('Possible EventEmitter memory leak detected. ' +
-                          existing.length + ' ' + String(type) + ' listeners ' +
-                          'added. Use emitter.setMaxListeners() to ' +
-                          'increase limit');
-      w.name = 'MaxListenersExceededWarning';
-      w.emitter = target;
-      w.type = type;
-      w.count = existing.length;
-      ProcessEmitWarning(w);
-    }
-  }
-
-  return target;
-}
-
-EventEmitter.prototype.addListener = function addListener(type, listener) {
-  return _addListener(this, type, listener, false);
-};
-
-EventEmitter.prototype.on = EventEmitter.prototype.addListener;
-
-EventEmitter.prototype.prependListener =
-    function prependListener(type, listener) {
-      return _addListener(this, type, listener, true);
-    };
-
-function onceWrapper() {
-  if (!this.fired) {
-    this.target.removeListener(this.type, this.wrapFn);
-    this.fired = true;
-    if (arguments.length === 0)
-      return this.listener.call(this.target);
-    return this.listener.apply(this.target, arguments);
-  }
-}
-
-function _onceWrap(target, type, listener) {
-  var state = { fired: false, wrapFn: undefined, target: target, type: type, listener: listener };
-  var wrapped = onceWrapper.bind(state);
-  wrapped.listener = listener;
-  state.wrapFn = wrapped;
-  return wrapped;
-}
-
-EventEmitter.prototype.once = function once(type, listener) {
-  checkListener(listener);
-  this.on(type, _onceWrap(this, type, listener));
-  return this;
-};
-
-EventEmitter.prototype.prependOnceListener =
-    function prependOnceListener(type, listener) {
-      checkListener(listener);
-      this.prependListener(type, _onceWrap(this, type, listener));
-      return this;
-    };
-
-// Emits a 'removeListener' event if and only if the listener was removed.
-EventEmitter.prototype.removeListener =
-    function removeListener(type, listener) {
-      var list, events, position, i, originalListener;
-
-      checkListener(listener);
-
-      events = this._events;
-      if (events === undefined)
-        return this;
-
-      list = events[type];
-      if (list === undefined)
-        return this;
-
-      if (list === listener || list.listener === listener) {
-        if (--this._eventsCount === 0)
-          this._events = Object.create(null);
-        else {
-          delete events[type];
-          if (events.removeListener)
-            this.emit('removeListener', type, list.listener || listener);
-        }
-      } else if (typeof list !== 'function') {
-        position = -1;
-
-        for (i = list.length - 1; i >= 0; i--) {
-          if (list[i] === listener || list[i].listener === listener) {
-            originalListener = list[i].listener;
-            position = i;
-            break;
-          }
-        }
-
-        if (position < 0)
-          return this;
-
-        if (position === 0)
-          list.shift();
-        else {
-          spliceOne(list, position);
-        }
-
-        if (list.length === 1)
-          events[type] = list[0];
-
-        if (events.removeListener !== undefined)
-          this.emit('removeListener', type, originalListener || listener);
-      }
-
-      return this;
-    };
-
-EventEmitter.prototype.off = EventEmitter.prototype.removeListener;
-
-EventEmitter.prototype.removeAllListeners =
-    function removeAllListeners(type) {
-      var listeners, events, i;
-
-      events = this._events;
-      if (events === undefined)
-        return this;
-
-      // not listening for removeListener, no need to emit
-      if (events.removeListener === undefined) {
-        if (arguments.length === 0) {
-          this._events = Object.create(null);
-          this._eventsCount = 0;
-        } else if (events[type] !== undefined) {
-          if (--this._eventsCount === 0)
-            this._events = Object.create(null);
-          else
-            delete events[type];
-        }
-        return this;
-      }
-
-      // emit removeListener for all listeners on all events
-      if (arguments.length === 0) {
-        var keys = Object.keys(events);
-        var key;
-        for (i = 0; i < keys.length; ++i) {
-          key = keys[i];
-          if (key === 'removeListener') continue;
-          this.removeAllListeners(key);
-        }
-        this.removeAllListeners('removeListener');
-        this._events = Object.create(null);
-        this._eventsCount = 0;
-        return this;
-      }
-
-      listeners = events[type];
-
-      if (typeof listeners === 'function') {
-        this.removeListener(type, listeners);
-      } else if (listeners !== undefined) {
-        // LIFO order
-        for (i = listeners.length - 1; i >= 0; i--) {
-          this.removeListener(type, listeners[i]);
-        }
-      }
-
-      return this;
-    };
-
-function _listeners(target, type, unwrap) {
-  var events = target._events;
-
-  if (events === undefined)
-    return [];
-
-  var evlistener = events[type];
-  if (evlistener === undefined)
-    return [];
-
-  if (typeof evlistener === 'function')
-    return unwrap ? [evlistener.listener || evlistener] : [evlistener];
-
-  return unwrap ?
-    unwrapListeners(evlistener) : arrayClone(evlistener, evlistener.length);
-}
-
-EventEmitter.prototype.listeners = function listeners(type) {
-  return _listeners(this, type, true);
-};
-
-EventEmitter.prototype.rawListeners = function rawListeners(type) {
-  return _listeners(this, type, false);
-};
-
-EventEmitter.listenerCount = function(emitter, type) {
-  if (typeof emitter.listenerCount === 'function') {
-    return emitter.listenerCount(type);
-  } else {
-    return listenerCount.call(emitter, type);
-  }
-};
-
-EventEmitter.prototype.listenerCount = listenerCount;
-function listenerCount(type) {
-  var events = this._events;
-
-  if (events !== undefined) {
-    var evlistener = events[type];
-
-    if (typeof evlistener === 'function') {
-      return 1;
-    } else if (evlistener !== undefined) {
-      return evlistener.length;
-    }
-  }
-
-  return 0;
-}
-
-EventEmitter.prototype.eventNames = function eventNames() {
-  return this._eventsCount > 0 ? ReflectOwnKeys(this._events) : [];
-};
-
-function arrayClone(arr, n) {
-  var copy = new Array(n);
-  for (var i = 0; i < n; ++i)
-    copy[i] = arr[i];
-  return copy;
-}
-
-function spliceOne(list, index) {
-  for (; index + 1 < list.length; index++)
-    list[index] = list[index + 1];
-  list.pop();
-}
-
-function unwrapListeners(arr) {
-  var ret = new Array(arr.length);
-  for (var i = 0; i < ret.length; ++i) {
-    ret[i] = arr[i].listener || arr[i];
-  }
-  return ret;
-}
-
-function once(emitter, name) {
-  return new Promise(function (resolve, reject) {
-    function errorListener(err) {
-      emitter.removeListener(name, resolver);
-      reject(err);
-    }
-
-    function resolver() {
-      if (typeof emitter.removeListener === 'function') {
-        emitter.removeListener('error', errorListener);
-      }
-      resolve([].slice.call(arguments));
-    };
-
-    eventTargetAgnosticAddListener(emitter, name, resolver, { once: true });
-    if (name !== 'error') {
-      addErrorHandlerIfEventEmitter(emitter, errorListener, { once: true });
-    }
-  });
-}
-
-function addErrorHandlerIfEventEmitter(emitter, handler, flags) {
-  if (typeof emitter.on === 'function') {
-    eventTargetAgnosticAddListener(emitter, 'error', handler, flags);
-  }
-}
-
-function eventTargetAgnosticAddListener(emitter, name, listener, flags) {
-  if (typeof emitter.on === 'function') {
-    if (flags.once) {
-      emitter.once(name, listener);
-    } else {
-      emitter.on(name, listener);
-    }
-  } else if (typeof emitter.addEventListener === 'function') {
-    // EventTarget does not have `error` event semantics like Node
-    // EventEmitters, we do not listen for `error` events here.
-    emitter.addEventListener(name, function wrapListener(arg) {
-      // IE does not have builtin `{ once: true }` support so we
-      // have to do it manually.
-      if (flags.once) {
-        emitter.removeEventListener(name, wrapListener);
-      }
-      listener(arg);
-    });
-  } else {
-    throw new TypeError('The "emitter" argument must be of type EventEmitter. Received type ' + typeof emitter);
-  }
-}
-
-},{}],423:[function(require,module,exports){
+},{}],497:[function(require,module,exports){
 module.exports = stringify
 stringify.default = stringify
 stringify.stable = deterministicStringify
@@ -21611,7 +25876,7 @@ function replaceGetterValues (replacer) {
   }
 }
 
-},{}],424:[function(require,module,exports){
+},{}],498:[function(require,module,exports){
 'use strict';
 
 /* eslint no-invalid-this: 1 */
@@ -21665,14 +25930,14 @@ module.exports = function bind(that) {
     return bound;
 };
 
-},{}],425:[function(require,module,exports){
+},{}],499:[function(require,module,exports){
 'use strict';
 
 var implementation = require('./implementation');
 
 module.exports = Function.prototype.bind || implementation;
 
-},{"./implementation":424}],426:[function(require,module,exports){
+},{"./implementation":498}],500:[function(require,module,exports){
 'use strict';
 
 var undefined;
@@ -22004,7 +26269,7 @@ module.exports = function GetIntrinsic(name, allowMissing) {
 	return value;
 };
 
-},{"function-bind":425,"has":505,"has-symbols":503}],427:[function(require,module,exports){
+},{"function-bind":499,"has":579,"has-symbols":577}],501:[function(require,module,exports){
 module.exports = adjoint;
 
 /**
@@ -22038,7 +26303,7 @@ function adjoint(out, a) {
     out[15] =  (a00 * (a11 * a22 - a12 * a21) - a10 * (a01 * a22 - a02 * a21) + a20 * (a01 * a12 - a02 * a11));
     return out;
 };
-},{}],428:[function(require,module,exports){
+},{}],502:[function(require,module,exports){
 module.exports = clone;
 
 /**
@@ -22067,7 +26332,7 @@ function clone(a) {
     out[15] = a[15];
     return out;
 };
-},{}],429:[function(require,module,exports){
+},{}],503:[function(require,module,exports){
 module.exports = copy;
 
 /**
@@ -22096,7 +26361,7 @@ function copy(out, a) {
     out[15] = a[15];
     return out;
 };
-},{}],430:[function(require,module,exports){
+},{}],504:[function(require,module,exports){
 module.exports = create;
 
 /**
@@ -22124,7 +26389,7 @@ function create() {
     out[15] = 1;
     return out;
 };
-},{}],431:[function(require,module,exports){
+},{}],505:[function(require,module,exports){
 module.exports = determinant;
 
 /**
@@ -22155,7 +26420,7 @@ function determinant(a) {
     // Calculate the determinant
     return b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
 };
-},{}],432:[function(require,module,exports){
+},{}],506:[function(require,module,exports){
 module.exports = fromQuat;
 
 /**
@@ -22203,7 +26468,7 @@ function fromQuat(out, q) {
 
     return out;
 };
-},{}],433:[function(require,module,exports){
+},{}],507:[function(require,module,exports){
 module.exports = fromRotation
 
 /**
@@ -22258,7 +26523,7 @@ function fromRotation(out, rad, axis) {
   return out
 }
 
-},{}],434:[function(require,module,exports){
+},{}],508:[function(require,module,exports){
 module.exports = fromRotationTranslation;
 
 /**
@@ -22312,7 +26577,7 @@ function fromRotationTranslation(out, q, v) {
     
     return out;
 };
-},{}],435:[function(require,module,exports){
+},{}],509:[function(require,module,exports){
 module.exports = fromScaling
 
 /**
@@ -22346,7 +26611,7 @@ function fromScaling(out, v) {
   return out
 }
 
-},{}],436:[function(require,module,exports){
+},{}],510:[function(require,module,exports){
 module.exports = fromTranslation
 
 /**
@@ -22380,7 +26645,7 @@ function fromTranslation(out, v) {
   return out
 }
 
-},{}],437:[function(require,module,exports){
+},{}],511:[function(require,module,exports){
 module.exports = fromXRotation
 
 /**
@@ -22417,7 +26682,7 @@ function fromXRotation(out, rad) {
     out[15] = 1
     return out
 }
-},{}],438:[function(require,module,exports){
+},{}],512:[function(require,module,exports){
 module.exports = fromYRotation
 
 /**
@@ -22454,7 +26719,7 @@ function fromYRotation(out, rad) {
     out[15] = 1
     return out
 }
-},{}],439:[function(require,module,exports){
+},{}],513:[function(require,module,exports){
 module.exports = fromZRotation
 
 /**
@@ -22491,7 +26756,7 @@ function fromZRotation(out, rad) {
     out[15] = 1
     return out
 }
-},{}],440:[function(require,module,exports){
+},{}],514:[function(require,module,exports){
 module.exports = frustum;
 
 /**
@@ -22528,7 +26793,7 @@ function frustum(out, left, right, bottom, top, near, far) {
     out[15] = 0;
     return out;
 };
-},{}],441:[function(require,module,exports){
+},{}],515:[function(require,module,exports){
 module.exports = identity;
 
 /**
@@ -22556,7 +26821,7 @@ function identity(out) {
     out[15] = 1;
     return out;
 };
-},{}],442:[function(require,module,exports){
+},{}],516:[function(require,module,exports){
 module.exports = {
   create: require('./create')
   , clone: require('./clone')
@@ -22589,7 +26854,7 @@ module.exports = {
   , str: require('./str')
 }
 
-},{"./adjoint":427,"./clone":428,"./copy":429,"./create":430,"./determinant":431,"./fromQuat":432,"./fromRotation":433,"./fromRotationTranslation":434,"./fromScaling":435,"./fromTranslation":436,"./fromXRotation":437,"./fromYRotation":438,"./fromZRotation":439,"./frustum":440,"./identity":441,"./invert":443,"./lookAt":444,"./multiply":445,"./ortho":446,"./perspective":447,"./perspectiveFromFieldOfView":448,"./rotate":449,"./rotateX":450,"./rotateY":451,"./rotateZ":452,"./scale":453,"./str":454,"./translate":455,"./transpose":456}],443:[function(require,module,exports){
+},{"./adjoint":501,"./clone":502,"./copy":503,"./create":504,"./determinant":505,"./fromQuat":506,"./fromRotation":507,"./fromRotationTranslation":508,"./fromScaling":509,"./fromTranslation":510,"./fromXRotation":511,"./fromYRotation":512,"./fromZRotation":513,"./frustum":514,"./identity":515,"./invert":517,"./lookAt":518,"./multiply":519,"./ortho":520,"./perspective":521,"./perspectiveFromFieldOfView":522,"./rotate":523,"./rotateX":524,"./rotateY":525,"./rotateZ":526,"./scale":527,"./str":528,"./translate":529,"./transpose":530}],517:[function(require,module,exports){
 module.exports = invert;
 
 /**
@@ -22645,7 +26910,7 @@ function invert(out, a) {
 
     return out;
 };
-},{}],444:[function(require,module,exports){
+},{}],518:[function(require,module,exports){
 var identity = require('./identity');
 
 module.exports = lookAt;
@@ -22736,7 +27001,7 @@ function lookAt(out, eye, center, up) {
 
     return out;
 };
-},{"./identity":441}],445:[function(require,module,exports){
+},{"./identity":515}],519:[function(require,module,exports){
 module.exports = multiply;
 
 /**
@@ -22779,7 +27044,7 @@ function multiply(out, a, b) {
     out[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
     return out;
 };
-},{}],446:[function(require,module,exports){
+},{}],520:[function(require,module,exports){
 module.exports = ortho;
 
 /**
@@ -22816,7 +27081,7 @@ function ortho(out, left, right, bottom, top, near, far) {
     out[15] = 1;
     return out;
 };
-},{}],447:[function(require,module,exports){
+},{}],521:[function(require,module,exports){
 module.exports = perspective;
 
 /**
@@ -22850,7 +27115,7 @@ function perspective(out, fovy, aspect, near, far) {
     out[15] = 0;
     return out;
 };
-},{}],448:[function(require,module,exports){
+},{}],522:[function(require,module,exports){
 module.exports = perspectiveFromFieldOfView;
 
 /**
@@ -22892,7 +27157,7 @@ function perspectiveFromFieldOfView(out, fov, near, far) {
 }
 
 
-},{}],449:[function(require,module,exports){
+},{}],523:[function(require,module,exports){
 module.exports = rotate;
 
 /**
@@ -22957,7 +27222,7 @@ function rotate(out, a, rad, axis) {
     }
     return out;
 };
-},{}],450:[function(require,module,exports){
+},{}],524:[function(require,module,exports){
 module.exports = rotateX;
 
 /**
@@ -23002,7 +27267,7 @@ function rotateX(out, a, rad) {
     out[11] = a23 * c - a13 * s;
     return out;
 };
-},{}],451:[function(require,module,exports){
+},{}],525:[function(require,module,exports){
 module.exports = rotateY;
 
 /**
@@ -23047,7 +27312,7 @@ function rotateY(out, a, rad) {
     out[11] = a03 * s + a23 * c;
     return out;
 };
-},{}],452:[function(require,module,exports){
+},{}],526:[function(require,module,exports){
 module.exports = rotateZ;
 
 /**
@@ -23092,7 +27357,7 @@ function rotateZ(out, a, rad) {
     out[7] = a13 * c - a03 * s;
     return out;
 };
-},{}],453:[function(require,module,exports){
+},{}],527:[function(require,module,exports){
 module.exports = scale;
 
 /**
@@ -23124,7 +27389,7 @@ function scale(out, a, v) {
     out[15] = a[15];
     return out;
 };
-},{}],454:[function(require,module,exports){
+},{}],528:[function(require,module,exports){
 module.exports = str;
 
 /**
@@ -23139,7 +27404,7 @@ function str(a) {
                     a[8] + ', ' + a[9] + ', ' + a[10] + ', ' + a[11] + ', ' + 
                     a[12] + ', ' + a[13] + ', ' + a[14] + ', ' + a[15] + ')';
 };
-},{}],455:[function(require,module,exports){
+},{}],529:[function(require,module,exports){
 module.exports = translate;
 
 /**
@@ -23178,7 +27443,7 @@ function translate(out, a, v) {
 
     return out;
 };
-},{}],456:[function(require,module,exports){
+},{}],530:[function(require,module,exports){
 module.exports = transpose;
 
 /**
@@ -23228,7 +27493,7 @@ function transpose(out, a) {
     
     return out;
 };
-},{}],457:[function(require,module,exports){
+},{}],531:[function(require,module,exports){
 module.exports = add;
 
 /**
@@ -23245,7 +27510,7 @@ function add(out, a, b) {
     out[2] = a[2] + b[2]
     return out
 }
-},{}],458:[function(require,module,exports){
+},{}],532:[function(require,module,exports){
 module.exports = angle
 
 var fromValues = require('./fromValues')
@@ -23274,7 +27539,7 @@ function angle(a, b) {
     }     
 }
 
-},{"./dot":468,"./fromValues":474,"./normalize":485}],459:[function(require,module,exports){
+},{"./dot":542,"./fromValues":548,"./normalize":559}],533:[function(require,module,exports){
 module.exports = ceil
 
 /**
@@ -23291,7 +27556,7 @@ function ceil(out, a) {
   return out
 }
 
-},{}],460:[function(require,module,exports){
+},{}],534:[function(require,module,exports){
 module.exports = clone;
 
 /**
@@ -23307,7 +27572,7 @@ function clone(a) {
     out[2] = a[2]
     return out
 }
-},{}],461:[function(require,module,exports){
+},{}],535:[function(require,module,exports){
 module.exports = copy;
 
 /**
@@ -23323,7 +27588,7 @@ function copy(out, a) {
     out[2] = a[2]
     return out
 }
-},{}],462:[function(require,module,exports){
+},{}],536:[function(require,module,exports){
 module.exports = create;
 
 /**
@@ -23338,7 +27603,7 @@ function create() {
     out[2] = 0
     return out
 }
-},{}],463:[function(require,module,exports){
+},{}],537:[function(require,module,exports){
 module.exports = cross;
 
 /**
@@ -23358,10 +27623,10 @@ function cross(out, a, b) {
     out[2] = ax * by - ay * bx
     return out
 }
-},{}],464:[function(require,module,exports){
+},{}],538:[function(require,module,exports){
 module.exports = require('./distance')
 
-},{"./distance":465}],465:[function(require,module,exports){
+},{"./distance":539}],539:[function(require,module,exports){
 module.exports = distance;
 
 /**
@@ -23377,10 +27642,10 @@ function distance(a, b) {
         z = b[2] - a[2]
     return Math.sqrt(x*x + y*y + z*z)
 }
-},{}],466:[function(require,module,exports){
+},{}],540:[function(require,module,exports){
 module.exports = require('./divide')
 
-},{"./divide":467}],467:[function(require,module,exports){
+},{"./divide":541}],541:[function(require,module,exports){
 module.exports = divide;
 
 /**
@@ -23397,7 +27662,7 @@ function divide(out, a, b) {
     out[2] = a[2] / b[2]
     return out
 }
-},{}],468:[function(require,module,exports){
+},{}],542:[function(require,module,exports){
 module.exports = dot;
 
 /**
@@ -23410,10 +27675,10 @@ module.exports = dot;
 function dot(a, b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-},{}],469:[function(require,module,exports){
+},{}],543:[function(require,module,exports){
 module.exports = 0.000001
 
-},{}],470:[function(require,module,exports){
+},{}],544:[function(require,module,exports){
 module.exports = equals
 
 var EPSILON = require('./epsilon')
@@ -23437,7 +27702,7 @@ function equals(a, b) {
           Math.abs(a2 - b2) <= EPSILON * Math.max(1.0, Math.abs(a2), Math.abs(b2)))
 }
 
-},{"./epsilon":469}],471:[function(require,module,exports){
+},{"./epsilon":543}],545:[function(require,module,exports){
 module.exports = exactEquals
 
 /**
@@ -23451,7 +27716,7 @@ function exactEquals(a, b) {
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
 }
 
-},{}],472:[function(require,module,exports){
+},{}],546:[function(require,module,exports){
 module.exports = floor
 
 /**
@@ -23468,7 +27733,7 @@ function floor(out, a) {
   return out
 }
 
-},{}],473:[function(require,module,exports){
+},{}],547:[function(require,module,exports){
 module.exports = forEach;
 
 var vec = require('./create')()
@@ -23513,7 +27778,7 @@ function forEach(a, stride, offset, count, fn, arg) {
         
         return a
 }
-},{"./create":462}],474:[function(require,module,exports){
+},{"./create":536}],548:[function(require,module,exports){
 module.exports = fromValues;
 
 /**
@@ -23531,7 +27796,7 @@ function fromValues(x, y, z) {
     out[2] = z
     return out
 }
-},{}],475:[function(require,module,exports){
+},{}],549:[function(require,module,exports){
 module.exports = {
   EPSILON: require('./epsilon')
   , create: require('./create')
@@ -23580,7 +27845,7 @@ module.exports = {
   , forEach: require('./forEach')
 }
 
-},{"./add":457,"./angle":458,"./ceil":459,"./clone":460,"./copy":461,"./create":462,"./cross":463,"./dist":464,"./distance":465,"./div":466,"./divide":467,"./dot":468,"./epsilon":469,"./equals":470,"./exactEquals":471,"./floor":472,"./forEach":473,"./fromValues":474,"./inverse":476,"./len":477,"./length":478,"./lerp":479,"./max":480,"./min":481,"./mul":482,"./multiply":483,"./negate":484,"./normalize":485,"./random":486,"./rotateX":487,"./rotateY":488,"./rotateZ":489,"./round":490,"./scale":491,"./scaleAndAdd":492,"./set":493,"./sqrDist":494,"./sqrLen":495,"./squaredDistance":496,"./squaredLength":497,"./sub":498,"./subtract":499,"./transformMat3":500,"./transformMat4":501,"./transformQuat":502}],476:[function(require,module,exports){
+},{"./add":531,"./angle":532,"./ceil":533,"./clone":534,"./copy":535,"./create":536,"./cross":537,"./dist":538,"./distance":539,"./div":540,"./divide":541,"./dot":542,"./epsilon":543,"./equals":544,"./exactEquals":545,"./floor":546,"./forEach":547,"./fromValues":548,"./inverse":550,"./len":551,"./length":552,"./lerp":553,"./max":554,"./min":555,"./mul":556,"./multiply":557,"./negate":558,"./normalize":559,"./random":560,"./rotateX":561,"./rotateY":562,"./rotateZ":563,"./round":564,"./scale":565,"./scaleAndAdd":566,"./set":567,"./sqrDist":568,"./sqrLen":569,"./squaredDistance":570,"./squaredLength":571,"./sub":572,"./subtract":573,"./transformMat3":574,"./transformMat4":575,"./transformQuat":576}],550:[function(require,module,exports){
 module.exports = inverse;
 
 /**
@@ -23596,10 +27861,10 @@ function inverse(out, a) {
   out[2] = 1.0 / a[2]
   return out
 }
-},{}],477:[function(require,module,exports){
+},{}],551:[function(require,module,exports){
 module.exports = require('./length')
 
-},{"./length":478}],478:[function(require,module,exports){
+},{"./length":552}],552:[function(require,module,exports){
 module.exports = length;
 
 /**
@@ -23614,7 +27879,7 @@ function length(a) {
         z = a[2]
     return Math.sqrt(x*x + y*y + z*z)
 }
-},{}],479:[function(require,module,exports){
+},{}],553:[function(require,module,exports){
 module.exports = lerp;
 
 /**
@@ -23635,7 +27900,7 @@ function lerp(out, a, b, t) {
     out[2] = az + t * (b[2] - az)
     return out
 }
-},{}],480:[function(require,module,exports){
+},{}],554:[function(require,module,exports){
 module.exports = max;
 
 /**
@@ -23652,7 +27917,7 @@ function max(out, a, b) {
     out[2] = Math.max(a[2], b[2])
     return out
 }
-},{}],481:[function(require,module,exports){
+},{}],555:[function(require,module,exports){
 module.exports = min;
 
 /**
@@ -23669,10 +27934,10 @@ function min(out, a, b) {
     out[2] = Math.min(a[2], b[2])
     return out
 }
-},{}],482:[function(require,module,exports){
+},{}],556:[function(require,module,exports){
 module.exports = require('./multiply')
 
-},{"./multiply":483}],483:[function(require,module,exports){
+},{"./multiply":557}],557:[function(require,module,exports){
 module.exports = multiply;
 
 /**
@@ -23689,7 +27954,7 @@ function multiply(out, a, b) {
     out[2] = a[2] * b[2]
     return out
 }
-},{}],484:[function(require,module,exports){
+},{}],558:[function(require,module,exports){
 module.exports = negate;
 
 /**
@@ -23705,7 +27970,7 @@ function negate(out, a) {
     out[2] = -a[2]
     return out
 }
-},{}],485:[function(require,module,exports){
+},{}],559:[function(require,module,exports){
 module.exports = normalize;
 
 /**
@@ -23729,7 +27994,7 @@ function normalize(out, a) {
     }
     return out
 }
-},{}],486:[function(require,module,exports){
+},{}],560:[function(require,module,exports){
 module.exports = random;
 
 /**
@@ -23751,7 +28016,7 @@ function random(out, scale) {
     out[2] = z * scale
     return out
 }
-},{}],487:[function(require,module,exports){
+},{}],561:[function(require,module,exports){
 module.exports = rotateX;
 
 /**
@@ -23781,7 +28046,7 @@ function rotateX(out, a, b, c){
     return out
 }
 
-},{}],488:[function(require,module,exports){
+},{}],562:[function(require,module,exports){
 module.exports = rotateY;
 
 /**
@@ -23811,7 +28076,7 @@ function rotateY(out, a, b, c){
     return out
 }
 
-},{}],489:[function(require,module,exports){
+},{}],563:[function(require,module,exports){
 module.exports = rotateZ;
 
 /**
@@ -23841,7 +28106,7 @@ function rotateZ(out, a, b, c){
     return out
 }
 
-},{}],490:[function(require,module,exports){
+},{}],564:[function(require,module,exports){
 module.exports = round
 
 /**
@@ -23858,7 +28123,7 @@ function round(out, a) {
   return out
 }
 
-},{}],491:[function(require,module,exports){
+},{}],565:[function(require,module,exports){
 module.exports = scale;
 
 /**
@@ -23875,7 +28140,7 @@ function scale(out, a, b) {
     out[2] = a[2] * b
     return out
 }
-},{}],492:[function(require,module,exports){
+},{}],566:[function(require,module,exports){
 module.exports = scaleAndAdd;
 
 /**
@@ -23893,7 +28158,7 @@ function scaleAndAdd(out, a, b, scale) {
     out[2] = a[2] + (b[2] * scale)
     return out
 }
-},{}],493:[function(require,module,exports){
+},{}],567:[function(require,module,exports){
 module.exports = set;
 
 /**
@@ -23911,13 +28176,13 @@ function set(out, x, y, z) {
     out[2] = z
     return out
 }
-},{}],494:[function(require,module,exports){
+},{}],568:[function(require,module,exports){
 module.exports = require('./squaredDistance')
 
-},{"./squaredDistance":496}],495:[function(require,module,exports){
+},{"./squaredDistance":570}],569:[function(require,module,exports){
 module.exports = require('./squaredLength')
 
-},{"./squaredLength":497}],496:[function(require,module,exports){
+},{"./squaredLength":571}],570:[function(require,module,exports){
 module.exports = squaredDistance;
 
 /**
@@ -23933,7 +28198,7 @@ function squaredDistance(a, b) {
         z = b[2] - a[2]
     return x*x + y*y + z*z
 }
-},{}],497:[function(require,module,exports){
+},{}],571:[function(require,module,exports){
 module.exports = squaredLength;
 
 /**
@@ -23948,10 +28213,10 @@ function squaredLength(a) {
         z = a[2]
     return x*x + y*y + z*z
 }
-},{}],498:[function(require,module,exports){
+},{}],572:[function(require,module,exports){
 module.exports = require('./subtract')
 
-},{"./subtract":499}],499:[function(require,module,exports){
+},{"./subtract":573}],573:[function(require,module,exports){
 module.exports = subtract;
 
 /**
@@ -23968,7 +28233,7 @@ function subtract(out, a, b) {
     out[2] = a[2] - b[2]
     return out
 }
-},{}],500:[function(require,module,exports){
+},{}],574:[function(require,module,exports){
 module.exports = transformMat3;
 
 /**
@@ -23986,7 +28251,7 @@ function transformMat3(out, a, m) {
     out[2] = x * m[2] + y * m[5] + z * m[8]
     return out
 }
-},{}],501:[function(require,module,exports){
+},{}],575:[function(require,module,exports){
 module.exports = transformMat4;
 
 /**
@@ -24007,7 +28272,7 @@ function transformMat4(out, a, m) {
     out[2] = (m[2] * x + m[6] * y + m[10] * z + m[14]) / w
     return out
 }
-},{}],502:[function(require,module,exports){
+},{}],576:[function(require,module,exports){
 module.exports = transformQuat;
 
 /**
@@ -24036,7 +28301,7 @@ function transformQuat(out, a, q) {
     out[2] = iz * qw + iw * -qz + ix * -qy - iy * -qx
     return out
 }
-},{}],503:[function(require,module,exports){
+},{}],577:[function(require,module,exports){
 'use strict';
 
 var origSymbol = typeof Symbol !== 'undefined' && Symbol;
@@ -24051,7 +28316,7 @@ module.exports = function hasNativeSymbols() {
 	return hasSymbolSham();
 };
 
-},{"./shams":504}],504:[function(require,module,exports){
+},{"./shams":578}],578:[function(require,module,exports){
 'use strict';
 
 /* eslint complexity: [2, 18], max-statements: [2, 33] */
@@ -24095,1067 +28360,624 @@ module.exports = function hasSymbols() {
 	return true;
 };
 
-},{}],505:[function(require,module,exports){
+},{}],579:[function(require,module,exports){
 'use strict';
 
 var bind = require('function-bind');
 
 module.exports = bind.call(Function.call, Object.prototype.hasOwnProperty);
 
-},{"function-bind":425}],506:[function(require,module,exports){
-/*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */
-exports.read = function (buffer, offset, isLE, mLen, nBytes) {
-  var e, m
-  var eLen = (nBytes * 8) - mLen - 1
-  var eMax = (1 << eLen) - 1
-  var eBias = eMax >> 1
-  var nBits = -7
-  var i = isLE ? (nBytes - 1) : 0
-  var d = isLE ? -1 : 1
-  var s = buffer[offset + i]
+},{"function-bind":499}],580:[function(require,module,exports){
+module.exports = attributeToProperty
 
-  i += d
-
-  e = s & ((1 << (-nBits)) - 1)
-  s >>= (-nBits)
-  nBits += eLen
-  for (; nBits > 0; e = (e * 256) + buffer[offset + i], i += d, nBits -= 8) {}
-
-  m = e & ((1 << (-nBits)) - 1)
-  e >>= (-nBits)
-  nBits += mLen
-  for (; nBits > 0; m = (m * 256) + buffer[offset + i], i += d, nBits -= 8) {}
-
-  if (e === 0) {
-    e = 1 - eBias
-  } else if (e === eMax) {
-    return m ? NaN : ((s ? -1 : 1) * Infinity)
-  } else {
-    m = m + Math.pow(2, mLen)
-    e = e - eBias
-  }
-  return (s ? -1 : 1) * m * Math.pow(2, e - mLen)
+var transform = {
+  'class': 'className',
+  'for': 'htmlFor',
+  'http-equiv': 'httpEquiv'
 }
 
-exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
-  var e, m, c
-  var eLen = (nBytes * 8) - mLen - 1
-  var eMax = (1 << eLen) - 1
-  var eBias = eMax >> 1
-  var rt = (mLen === 23 ? Math.pow(2, -24) - Math.pow(2, -77) : 0)
-  var i = isLE ? 0 : (nBytes - 1)
-  var d = isLE ? 1 : -1
-  var s = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0
-
-  value = Math.abs(value)
-
-  if (isNaN(value) || value === Infinity) {
-    m = isNaN(value) ? 1 : 0
-    e = eMax
-  } else {
-    e = Math.floor(Math.log(value) / Math.LN2)
-    if (value * (c = Math.pow(2, -e)) < 1) {
-      e--
-      c *= 2
-    }
-    if (e + eBias >= 1) {
-      value += rt / c
-    } else {
-      value += rt * Math.pow(2, 1 - eBias)
-    }
-    if (value * c >= 2) {
-      e++
-      c /= 2
-    }
-
-    if (e + eBias >= eMax) {
-      m = 0
-      e = eMax
-    } else if (e + eBias >= 1) {
-      m = ((value * c) - 1) * Math.pow(2, mLen)
-      e = e + eBias
-    } else {
-      m = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen)
-      e = 0
-    }
-  }
-
-  for (; mLen >= 8; buffer[offset + i] = m & 0xff, i += d, m /= 256, mLen -= 8) {}
-
-  e = (e << mLen) | m
-  eLen += mLen
-  for (; eLen > 0; buffer[offset + i] = e & 0xff, i += d, e /= 256, eLen -= 8) {}
-
-  buffer[offset + i - d] |= s * 128
-}
-
-},{}],507:[function(require,module,exports){
-// shim for using process in browser
-var process = module.exports = {};
-
-// cached from whatever global is present so that test runners that stub it
-// don't break things.  But we need to wrap it in a try catch in case it is
-// wrapped in strict mode code which doesn't define any globals.  It's inside a
-// function because try/catches deoptimize in certain engines.
-
-var cachedSetTimeout;
-var cachedClearTimeout;
-
-function defaultSetTimout() {
-    throw new Error('setTimeout has not been defined');
-}
-function defaultClearTimeout () {
-    throw new Error('clearTimeout has not been defined');
-}
-(function () {
-    try {
-        if (typeof setTimeout === 'function') {
-            cachedSetTimeout = setTimeout;
-        } else {
-            cachedSetTimeout = defaultSetTimout;
-        }
-    } catch (e) {
-        cachedSetTimeout = defaultSetTimout;
-    }
-    try {
-        if (typeof clearTimeout === 'function') {
-            cachedClearTimeout = clearTimeout;
-        } else {
-            cachedClearTimeout = defaultClearTimeout;
-        }
-    } catch (e) {
-        cachedClearTimeout = defaultClearTimeout;
-    }
-} ())
-function runTimeout(fun) {
-    if (cachedSetTimeout === setTimeout) {
-        //normal enviroments in sane situations
-        return setTimeout(fun, 0);
-    }
-    // if setTimeout wasn't available but was latter defined
-    if ((cachedSetTimeout === defaultSetTimout || !cachedSetTimeout) && setTimeout) {
-        cachedSetTimeout = setTimeout;
-        return setTimeout(fun, 0);
-    }
-    try {
-        // when when somebody has screwed with setTimeout but no I.E. maddness
-        return cachedSetTimeout(fun, 0);
-    } catch(e){
-        try {
-            // When we are in I.E. but the script has been evaled so I.E. doesn't trust the global object when called normally
-            return cachedSetTimeout.call(null, fun, 0);
-        } catch(e){
-            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error
-            return cachedSetTimeout.call(this, fun, 0);
-        }
-    }
-
-
-}
-function runClearTimeout(marker) {
-    if (cachedClearTimeout === clearTimeout) {
-        //normal enviroments in sane situations
-        return clearTimeout(marker);
-    }
-    // if clearTimeout wasn't available but was latter defined
-    if ((cachedClearTimeout === defaultClearTimeout || !cachedClearTimeout) && clearTimeout) {
-        cachedClearTimeout = clearTimeout;
-        return clearTimeout(marker);
-    }
-    try {
-        // when when somebody has screwed with setTimeout but no I.E. maddness
-        return cachedClearTimeout(marker);
-    } catch (e){
-        try {
-            // When we are in I.E. but the script has been evaled so I.E. doesn't  trust the global object when called normally
-            return cachedClearTimeout.call(null, marker);
-        } catch (e){
-            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error.
-            // Some versions of I.E. have different rules for clearTimeout vs setTimeout
-            return cachedClearTimeout.call(this, marker);
-        }
-    }
-
-
-
-}
-var queue = [];
-var draining = false;
-var currentQueue;
-var queueIndex = -1;
-
-function cleanUpNextTick() {
-    if (!draining || !currentQueue) {
-        return;
-    }
-    draining = false;
-    if (currentQueue.length) {
-        queue = currentQueue.concat(queue);
-    } else {
-        queueIndex = -1;
-    }
-    if (queue.length) {
-        drainQueue();
-    }
-}
-
-function drainQueue() {
-    if (draining) {
-        return;
-    }
-    var timeout = runTimeout(cleanUpNextTick);
-    draining = true;
-
-    var len = queue.length;
-    while(len) {
-        currentQueue = queue;
-        queue = [];
-        while (++queueIndex < len) {
-            if (currentQueue) {
-                currentQueue[queueIndex].run();
-            }
-        }
-        queueIndex = -1;
-        len = queue.length;
-    }
-    currentQueue = null;
-    draining = false;
-    runClearTimeout(timeout);
-}
-
-process.nextTick = function (fun) {
-    var args = new Array(arguments.length - 1);
-    if (arguments.length > 1) {
-        for (var i = 1; i < arguments.length; i++) {
-            args[i - 1] = arguments[i];
-        }
-    }
-    queue.push(new Item(fun, args));
-    if (queue.length === 1 && !draining) {
-        runTimeout(drainQueue);
-    }
-};
-
-// v8 likes predictible objects
-function Item(fun, array) {
-    this.fun = fun;
-    this.array = array;
-}
-Item.prototype.run = function () {
-    this.fun.apply(null, this.array);
-};
-process.title = 'browser';
-process.browser = true;
-process.env = {};
-process.argv = [];
-process.version = ''; // empty string to avoid regexp issues
-process.versions = {};
-
-function noop() {}
-
-process.on = noop;
-process.addListener = noop;
-process.once = noop;
-process.off = noop;
-process.removeListener = noop;
-process.removeAllListeners = noop;
-process.emit = noop;
-process.prependListener = noop;
-process.prependOnceListener = noop;
-
-process.listeners = function (name) { return [] }
-
-process.binding = function (name) {
-    throw new Error('process.binding is not supported');
-};
-
-process.cwd = function () { return '/' };
-process.chdir = function (dir) {
-    throw new Error('process.chdir is not supported');
-};
-process.umask = function() { return 0; };
-
-},{}],508:[function(require,module,exports){
-(function (global){(function (){
-/*! https://mths.be/punycode v1.4.1 by @mathias */
-;(function(root) {
-
-	/** Detect free variables */
-	var freeExports = typeof exports == 'object' && exports &&
-		!exports.nodeType && exports;
-	var freeModule = typeof module == 'object' && module &&
-		!module.nodeType && module;
-	var freeGlobal = typeof global == 'object' && global;
-	if (
-		freeGlobal.global === freeGlobal ||
-		freeGlobal.window === freeGlobal ||
-		freeGlobal.self === freeGlobal
-	) {
-		root = freeGlobal;
-	}
-
-	/**
-	 * The `punycode` object.
-	 * @name punycode
-	 * @type Object
-	 */
-	var punycode,
-
-	/** Highest positive signed 32-bit float value */
-	maxInt = 2147483647, // aka. 0x7FFFFFFF or 2^31-1
-
-	/** Bootstring parameters */
-	base = 36,
-	tMin = 1,
-	tMax = 26,
-	skew = 38,
-	damp = 700,
-	initialBias = 72,
-	initialN = 128, // 0x80
-	delimiter = '-', // '\x2D'
-
-	/** Regular expressions */
-	regexPunycode = /^xn--/,
-	regexNonASCII = /[^\x20-\x7E]/, // unprintable ASCII chars + non-ASCII chars
-	regexSeparators = /[\x2E\u3002\uFF0E\uFF61]/g, // RFC 3490 separators
-
-	/** Error messages */
-	errors = {
-		'overflow': 'Overflow: input needs wider integers to process',
-		'not-basic': 'Illegal input >= 0x80 (not a basic code point)',
-		'invalid-input': 'Invalid input'
-	},
-
-	/** Convenience shortcuts */
-	baseMinusTMin = base - tMin,
-	floor = Math.floor,
-	stringFromCharCode = String.fromCharCode,
-
-	/** Temporary variable */
-	key;
-
-	/*--------------------------------------------------------------------------*/
-
-	/**
-	 * A generic error utility function.
-	 * @private
-	 * @param {String} type The error type.
-	 * @returns {Error} Throws a `RangeError` with the applicable error message.
-	 */
-	function error(type) {
-		throw new RangeError(errors[type]);
-	}
-
-	/**
-	 * A generic `Array#map` utility function.
-	 * @private
-	 * @param {Array} array The array to iterate over.
-	 * @param {Function} callback The function that gets called for every array
-	 * item.
-	 * @returns {Array} A new array of values returned by the callback function.
-	 */
-	function map(array, fn) {
-		var length = array.length;
-		var result = [];
-		while (length--) {
-			result[length] = fn(array[length]);
-		}
-		return result;
-	}
-
-	/**
-	 * A simple `Array#map`-like wrapper to work with domain name strings or email
-	 * addresses.
-	 * @private
-	 * @param {String} domain The domain name or email address.
-	 * @param {Function} callback The function that gets called for every
-	 * character.
-	 * @returns {Array} A new string of characters returned by the callback
-	 * function.
-	 */
-	function mapDomain(string, fn) {
-		var parts = string.split('@');
-		var result = '';
-		if (parts.length > 1) {
-			// In email addresses, only the domain name should be punycoded. Leave
-			// the local part (i.e. everything up to `@`) intact.
-			result = parts[0] + '@';
-			string = parts[1];
-		}
-		// Avoid `split(regex)` for IE8 compatibility. See #17.
-		string = string.replace(regexSeparators, '\x2E');
-		var labels = string.split('.');
-		var encoded = map(labels, fn).join('.');
-		return result + encoded;
-	}
-
-	/**
-	 * Creates an array containing the numeric code points of each Unicode
-	 * character in the string. While JavaScript uses UCS-2 internally,
-	 * this function will convert a pair of surrogate halves (each of which
-	 * UCS-2 exposes as separate characters) into a single code point,
-	 * matching UTF-16.
-	 * @see `punycode.ucs2.encode`
-	 * @see <https://mathiasbynens.be/notes/javascript-encoding>
-	 * @memberOf punycode.ucs2
-	 * @name decode
-	 * @param {String} string The Unicode input string (UCS-2).
-	 * @returns {Array} The new array of code points.
-	 */
-	function ucs2decode(string) {
-		var output = [],
-		    counter = 0,
-		    length = string.length,
-		    value,
-		    extra;
-		while (counter < length) {
-			value = string.charCodeAt(counter++);
-			if (value >= 0xD800 && value <= 0xDBFF && counter < length) {
-				// high surrogate, and there is a next character
-				extra = string.charCodeAt(counter++);
-				if ((extra & 0xFC00) == 0xDC00) { // low surrogate
-					output.push(((value & 0x3FF) << 10) + (extra & 0x3FF) + 0x10000);
-				} else {
-					// unmatched surrogate; only append this code unit, in case the next
-					// code unit is the high surrogate of a surrogate pair
-					output.push(value);
-					counter--;
-				}
-			} else {
-				output.push(value);
-			}
-		}
-		return output;
-	}
-
-	/**
-	 * Creates a string based on an array of numeric code points.
-	 * @see `punycode.ucs2.decode`
-	 * @memberOf punycode.ucs2
-	 * @name encode
-	 * @param {Array} codePoints The array of numeric code points.
-	 * @returns {String} The new Unicode string (UCS-2).
-	 */
-	function ucs2encode(array) {
-		return map(array, function(value) {
-			var output = '';
-			if (value > 0xFFFF) {
-				value -= 0x10000;
-				output += stringFromCharCode(value >>> 10 & 0x3FF | 0xD800);
-				value = 0xDC00 | value & 0x3FF;
-			}
-			output += stringFromCharCode(value);
-			return output;
-		}).join('');
-	}
-
-	/**
-	 * Converts a basic code point into a digit/integer.
-	 * @see `digitToBasic()`
-	 * @private
-	 * @param {Number} codePoint The basic numeric code point value.
-	 * @returns {Number} The numeric value of a basic code point (for use in
-	 * representing integers) in the range `0` to `base - 1`, or `base` if
-	 * the code point does not represent a value.
-	 */
-	function basicToDigit(codePoint) {
-		if (codePoint - 48 < 10) {
-			return codePoint - 22;
-		}
-		if (codePoint - 65 < 26) {
-			return codePoint - 65;
-		}
-		if (codePoint - 97 < 26) {
-			return codePoint - 97;
-		}
-		return base;
-	}
-
-	/**
-	 * Converts a digit/integer into a basic code point.
-	 * @see `basicToDigit()`
-	 * @private
-	 * @param {Number} digit The numeric value of a basic code point.
-	 * @returns {Number} The basic code point whose value (when used for
-	 * representing integers) is `digit`, which needs to be in the range
-	 * `0` to `base - 1`. If `flag` is non-zero, the uppercase form is
-	 * used; else, the lowercase form is used. The behavior is undefined
-	 * if `flag` is non-zero and `digit` has no uppercase form.
-	 */
-	function digitToBasic(digit, flag) {
-		//  0..25 map to ASCII a..z or A..Z
-		// 26..35 map to ASCII 0..9
-		return digit + 22 + 75 * (digit < 26) - ((flag != 0) << 5);
-	}
-
-	/**
-	 * Bias adaptation function as per section 3.4 of RFC 3492.
-	 * https://tools.ietf.org/html/rfc3492#section-3.4
-	 * @private
-	 */
-	function adapt(delta, numPoints, firstTime) {
-		var k = 0;
-		delta = firstTime ? floor(delta / damp) : delta >> 1;
-		delta += floor(delta / numPoints);
-		for (/* no initialization */; delta > baseMinusTMin * tMax >> 1; k += base) {
-			delta = floor(delta / baseMinusTMin);
-		}
-		return floor(k + (baseMinusTMin + 1) * delta / (delta + skew));
-	}
-
-	/**
-	 * Converts a Punycode string of ASCII-only symbols to a string of Unicode
-	 * symbols.
-	 * @memberOf punycode
-	 * @param {String} input The Punycode string of ASCII-only symbols.
-	 * @returns {String} The resulting string of Unicode symbols.
-	 */
-	function decode(input) {
-		// Don't use UCS-2
-		var output = [],
-		    inputLength = input.length,
-		    out,
-		    i = 0,
-		    n = initialN,
-		    bias = initialBias,
-		    basic,
-		    j,
-		    index,
-		    oldi,
-		    w,
-		    k,
-		    digit,
-		    t,
-		    /** Cached calculation results */
-		    baseMinusT;
-
-		// Handle the basic code points: let `basic` be the number of input code
-		// points before the last delimiter, or `0` if there is none, then copy
-		// the first basic code points to the output.
-
-		basic = input.lastIndexOf(delimiter);
-		if (basic < 0) {
-			basic = 0;
-		}
-
-		for (j = 0; j < basic; ++j) {
-			// if it's not a basic code point
-			if (input.charCodeAt(j) >= 0x80) {
-				error('not-basic');
-			}
-			output.push(input.charCodeAt(j));
-		}
-
-		// Main decoding loop: start just after the last delimiter if any basic code
-		// points were copied; start at the beginning otherwise.
-
-		for (index = basic > 0 ? basic + 1 : 0; index < inputLength; /* no final expression */) {
-
-			// `index` is the index of the next character to be consumed.
-			// Decode a generalized variable-length integer into `delta`,
-			// which gets added to `i`. The overflow checking is easier
-			// if we increase `i` as we go, then subtract off its starting
-			// value at the end to obtain `delta`.
-			for (oldi = i, w = 1, k = base; /* no condition */; k += base) {
-
-				if (index >= inputLength) {
-					error('invalid-input');
-				}
-
-				digit = basicToDigit(input.charCodeAt(index++));
-
-				if (digit >= base || digit > floor((maxInt - i) / w)) {
-					error('overflow');
-				}
-
-				i += digit * w;
-				t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
-
-				if (digit < t) {
-					break;
-				}
-
-				baseMinusT = base - t;
-				if (w > floor(maxInt / baseMinusT)) {
-					error('overflow');
-				}
-
-				w *= baseMinusT;
-
-			}
-
-			out = output.length + 1;
-			bias = adapt(i - oldi, out, oldi == 0);
-
-			// `i` was supposed to wrap around from `out` to `0`,
-			// incrementing `n` each time, so we'll fix that now:
-			if (floor(i / out) > maxInt - n) {
-				error('overflow');
-			}
-
-			n += floor(i / out);
-			i %= out;
-
-			// Insert `n` at position `i` of the output
-			output.splice(i++, 0, n);
-
-		}
-
-		return ucs2encode(output);
-	}
-
-	/**
-	 * Converts a string of Unicode symbols (e.g. a domain name label) to a
-	 * Punycode string of ASCII-only symbols.
-	 * @memberOf punycode
-	 * @param {String} input The string of Unicode symbols.
-	 * @returns {String} The resulting Punycode string of ASCII-only symbols.
-	 */
-	function encode(input) {
-		var n,
-		    delta,
-		    handledCPCount,
-		    basicLength,
-		    bias,
-		    j,
-		    m,
-		    q,
-		    k,
-		    t,
-		    currentValue,
-		    output = [],
-		    /** `inputLength` will hold the number of code points in `input`. */
-		    inputLength,
-		    /** Cached calculation results */
-		    handledCPCountPlusOne,
-		    baseMinusT,
-		    qMinusT;
-
-		// Convert the input in UCS-2 to Unicode
-		input = ucs2decode(input);
-
-		// Cache the length
-		inputLength = input.length;
-
-		// Initialize the state
-		n = initialN;
-		delta = 0;
-		bias = initialBias;
-
-		// Handle the basic code points
-		for (j = 0; j < inputLength; ++j) {
-			currentValue = input[j];
-			if (currentValue < 0x80) {
-				output.push(stringFromCharCode(currentValue));
-			}
-		}
-
-		handledCPCount = basicLength = output.length;
-
-		// `handledCPCount` is the number of code points that have been handled;
-		// `basicLength` is the number of basic code points.
-
-		// Finish the basic string - if it is not empty - with a delimiter
-		if (basicLength) {
-			output.push(delimiter);
-		}
-
-		// Main encoding loop:
-		while (handledCPCount < inputLength) {
-
-			// All non-basic code points < n have been handled already. Find the next
-			// larger one:
-			for (m = maxInt, j = 0; j < inputLength; ++j) {
-				currentValue = input[j];
-				if (currentValue >= n && currentValue < m) {
-					m = currentValue;
-				}
-			}
-
-			// Increase `delta` enough to advance the decoder's <n,i> state to <m,0>,
-			// but guard against overflow
-			handledCPCountPlusOne = handledCPCount + 1;
-			if (m - n > floor((maxInt - delta) / handledCPCountPlusOne)) {
-				error('overflow');
-			}
-
-			delta += (m - n) * handledCPCountPlusOne;
-			n = m;
-
-			for (j = 0; j < inputLength; ++j) {
-				currentValue = input[j];
-
-				if (currentValue < n && ++delta > maxInt) {
-					error('overflow');
-				}
-
-				if (currentValue == n) {
-					// Represent delta as a generalized variable-length integer
-					for (q = delta, k = base; /* no condition */; k += base) {
-						t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
-						if (q < t) {
-							break;
-						}
-						qMinusT = q - t;
-						baseMinusT = base - t;
-						output.push(
-							stringFromCharCode(digitToBasic(t + qMinusT % baseMinusT, 0))
-						);
-						q = floor(qMinusT / baseMinusT);
-					}
-
-					output.push(stringFromCharCode(digitToBasic(q, 0)));
-					bias = adapt(delta, handledCPCountPlusOne, handledCPCount == basicLength);
-					delta = 0;
-					++handledCPCount;
-				}
-			}
-
-			++delta;
-			++n;
-
-		}
-		return output.join('');
-	}
-
-	/**
-	 * Converts a Punycode string representing a domain name or an email address
-	 * to Unicode. Only the Punycoded parts of the input will be converted, i.e.
-	 * it doesn't matter if you call it on a string that has already been
-	 * converted to Unicode.
-	 * @memberOf punycode
-	 * @param {String} input The Punycoded domain name or email address to
-	 * convert to Unicode.
-	 * @returns {String} The Unicode representation of the given Punycode
-	 * string.
-	 */
-	function toUnicode(input) {
-		return mapDomain(input, function(string) {
-			return regexPunycode.test(string)
-				? decode(string.slice(4).toLowerCase())
-				: string;
-		});
-	}
-
-	/**
-	 * Converts a Unicode string representing a domain name or an email address to
-	 * Punycode. Only the non-ASCII parts of the domain name will be converted,
-	 * i.e. it doesn't matter if you call it with a domain that's already in
-	 * ASCII.
-	 * @memberOf punycode
-	 * @param {String} input The domain name or email address to convert, as a
-	 * Unicode string.
-	 * @returns {String} The Punycode representation of the given domain name or
-	 * email address.
-	 */
-	function toASCII(input) {
-		return mapDomain(input, function(string) {
-			return regexNonASCII.test(string)
-				? 'xn--' + encode(string)
-				: string;
-		});
-	}
-
-	/*--------------------------------------------------------------------------*/
-
-	/** Define the public API */
-	punycode = {
-		/**
-		 * A string representing the current Punycode.js version number.
-		 * @memberOf punycode
-		 * @type String
-		 */
-		'version': '1.4.1',
-		/**
-		 * An object of methods to convert from JavaScript's internal character
-		 * representation (UCS-2) to Unicode code points, and back.
-		 * @see <https://mathiasbynens.be/notes/javascript-encoding>
-		 * @memberOf punycode
-		 * @type Object
-		 */
-		'ucs2': {
-			'decode': ucs2decode,
-			'encode': ucs2encode
-		},
-		'decode': decode,
-		'encode': encode,
-		'toASCII': toASCII,
-		'toUnicode': toUnicode
-	};
-
-	/** Expose `punycode` */
-	// Some AMD build optimizers, like r.js, check for specific condition patterns
-	// like the following:
-	if (
-		typeof define == 'function' &&
-		typeof define.amd == 'object' &&
-		define.amd
-	) {
-		define('punycode', function() {
-			return punycode;
-		});
-	} else if (freeExports && freeModule) {
-		if (module.exports == freeExports) {
-			// in Node.js, io.js, or RingoJS v0.8.0+
-			freeModule.exports = punycode;
-		} else {
-			// in Narwhal or RingoJS v0.7.0-
-			for (key in punycode) {
-				punycode.hasOwnProperty(key) && (freeExports[key] = punycode[key]);
-			}
-		}
-	} else {
-		// in Rhino or a web browser
-		root.punycode = punycode;
-	}
-
-}(this));
-
-}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],509:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-// If obj.hasOwnProperty has been overridden, then calling
-// obj.hasOwnProperty(prop) will break.
-// See: https://github.com/joyent/node/issues/1707
-function hasOwnProperty(obj, prop) {
-  return Object.prototype.hasOwnProperty.call(obj, prop);
-}
-
-module.exports = function(qs, sep, eq, options) {
-  sep = sep || '&';
-  eq = eq || '=';
-  var obj = {};
-
-  if (typeof qs !== 'string' || qs.length === 0) {
-    return obj;
-  }
-
-  var regexp = /\+/g;
-  qs = qs.split(sep);
-
-  var maxKeys = 1000;
-  if (options && typeof options.maxKeys === 'number') {
-    maxKeys = options.maxKeys;
-  }
-
-  var len = qs.length;
-  // maxKeys <= 0 means that we should not limit keys count
-  if (maxKeys > 0 && len > maxKeys) {
-    len = maxKeys;
-  }
-
-  for (var i = 0; i < len; ++i) {
-    var x = qs[i].replace(regexp, '%20'),
-        idx = x.indexOf(eq),
-        kstr, vstr, k, v;
-
-    if (idx >= 0) {
-      kstr = x.substr(0, idx);
-      vstr = x.substr(idx + 1);
-    } else {
-      kstr = x;
-      vstr = '';
-    }
-
-    k = decodeURIComponent(kstr);
-    v = decodeURIComponent(vstr);
-
-    if (!hasOwnProperty(obj, k)) {
-      obj[k] = v;
-    } else if (isArray(obj[k])) {
-      obj[k].push(v);
-    } else {
-      obj[k] = [obj[k], v];
-    }
-  }
-
-  return obj;
-};
-
-var isArray = Array.isArray || function (xs) {
-  return Object.prototype.toString.call(xs) === '[object Array]';
-};
-
-},{}],510:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-var stringifyPrimitive = function(v) {
-  switch (typeof v) {
-    case 'string':
-      return v;
-
-    case 'boolean':
-      return v ? 'true' : 'false';
-
-    case 'number':
-      return isFinite(v) ? v : '';
-
-    default:
-      return '';
-  }
-};
-
-module.exports = function(obj, sep, eq, name) {
-  sep = sep || '&';
-  eq = eq || '=';
-  if (obj === null) {
-    obj = undefined;
-  }
-
-  if (typeof obj === 'object') {
-    return map(objectKeys(obj), function(k) {
-      var ks = encodeURIComponent(stringifyPrimitive(k)) + eq;
-      if (isArray(obj[k])) {
-        return map(obj[k], function(v) {
-          return ks + encodeURIComponent(stringifyPrimitive(v));
-        }).join(sep);
-      } else {
-        return ks + encodeURIComponent(stringifyPrimitive(obj[k]));
+function attributeToProperty (h) {
+  return function (tagName, attrs, children) {
+    for (var attr in attrs) {
+      if (attr in transform) {
+        attrs[transform[attr]] = attrs[attr]
+        delete attrs[attr]
       }
-    }).join(sep);
-
-  }
-
-  if (!name) return '';
-  return encodeURIComponent(stringifyPrimitive(name)) + eq +
-         encodeURIComponent(stringifyPrimitive(obj));
-};
-
-var isArray = Array.isArray || function (xs) {
-  return Object.prototype.toString.call(xs) === '[object Array]';
-};
-
-function map (xs, f) {
-  if (xs.map) return xs.map(f);
-  var res = [];
-  for (var i = 0; i < xs.length; i++) {
-    res.push(f(xs[i], i));
-  }
-  return res;
-}
-
-var objectKeys = Object.keys || function (obj) {
-  var res = [];
-  for (var key in obj) {
-    if (Object.prototype.hasOwnProperty.call(obj, key)) res.push(key);
-  }
-  return res;
-};
-
-},{}],511:[function(require,module,exports){
-'use strict';
-
-exports.decode = exports.parse = require('./decode');
-exports.encode = exports.stringify = require('./encode');
-
-},{"./decode":509,"./encode":510}],512:[function(require,module,exports){
-/* eslint-disable node/no-deprecated-api */
-var buffer = require('buffer')
-var Buffer = buffer.Buffer
-
-// alternative to using Object.keys for old browsers
-function copyProps (src, dst) {
-  for (var key in src) {
-    dst[key] = src[key]
-  }
-}
-if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) {
-  module.exports = buffer
-} else {
-  // Copy properties from require('buffer')
-  copyProps(buffer, exports)
-  exports.Buffer = SafeBuffer
-}
-
-function SafeBuffer (arg, encodingOrOffset, length) {
-  return Buffer(arg, encodingOrOffset, length)
-}
-
-// Copy static methods from Buffer
-copyProps(Buffer, SafeBuffer)
-
-SafeBuffer.from = function (arg, encodingOrOffset, length) {
-  if (typeof arg === 'number') {
-    throw new TypeError('Argument must not be a number')
-  }
-  return Buffer(arg, encodingOrOffset, length)
-}
-
-SafeBuffer.alloc = function (size, fill, encoding) {
-  if (typeof size !== 'number') {
-    throw new TypeError('Argument must be a number')
-  }
-  var buf = Buffer(size)
-  if (fill !== undefined) {
-    if (typeof encoding === 'string') {
-      buf.fill(fill, encoding)
-    } else {
-      buf.fill(fill)
     }
-  } else {
-    buf.fill(0)
+    return h(tagName, attrs, children)
   }
-  return buf
 }
 
-SafeBuffer.allocUnsafe = function (size) {
-  if (typeof size !== 'number') {
-    throw new TypeError('Argument must be a number')
+},{}],581:[function(require,module,exports){
+var attrToProp = require('hyperscript-attribute-to-property')
+
+var VAR = 0, TEXT = 1, OPEN = 2, CLOSE = 3, ATTR = 4
+var ATTR_KEY = 5, ATTR_KEY_W = 6
+var ATTR_VALUE_W = 7, ATTR_VALUE = 8
+var ATTR_VALUE_SQ = 9, ATTR_VALUE_DQ = 10
+var ATTR_EQ = 11, ATTR_BREAK = 12
+var COMMENT = 13
+
+module.exports = function (h, opts) {
+  if (!opts) opts = {}
+  var concat = opts.concat || function (a, b) {
+    return String(a) + String(b)
   }
-  return Buffer(size)
+  if (opts.attrToProp !== false) {
+    h = attrToProp(h)
+  }
+
+  return function (strings) {
+    var state = TEXT, reg = ''
+    var arglen = arguments.length
+    var parts = []
+
+    for (var i = 0; i < strings.length; i++) {
+      if (i < arglen - 1) {
+        var arg = arguments[i+1]
+        var p = parse(strings[i])
+        var xstate = state
+        if (xstate === ATTR_VALUE_DQ) xstate = ATTR_VALUE
+        if (xstate === ATTR_VALUE_SQ) xstate = ATTR_VALUE
+        if (xstate === ATTR_VALUE_W) xstate = ATTR_VALUE
+        if (xstate === ATTR) xstate = ATTR_KEY
+        if (xstate === OPEN) {
+          if (reg === '/') {
+            p.push([ OPEN, '/', arg ])
+            reg = ''
+          } else {
+            p.push([ OPEN, arg ])
+          }
+        } else if (xstate === COMMENT && opts.comments) {
+          reg += String(arg)
+        } else if (xstate !== COMMENT) {
+          p.push([ VAR, xstate, arg ])
+        }
+        parts.push.apply(parts, p)
+      } else parts.push.apply(parts, parse(strings[i]))
+    }
+
+    var tree = [null,{},[]]
+    var stack = [[tree,-1]]
+    for (var i = 0; i < parts.length; i++) {
+      var cur = stack[stack.length-1][0]
+      var p = parts[i], s = p[0]
+      if (s === OPEN && /^\//.test(p[1])) {
+        var ix = stack[stack.length-1][1]
+        if (stack.length > 1) {
+          stack.pop()
+          stack[stack.length-1][0][2][ix] = h(
+            cur[0], cur[1], cur[2].length ? cur[2] : undefined
+          )
+        }
+      } else if (s === OPEN) {
+        var c = [p[1],{},[]]
+        cur[2].push(c)
+        stack.push([c,cur[2].length-1])
+      } else if (s === ATTR_KEY || (s === VAR && p[1] === ATTR_KEY)) {
+        var key = ''
+        var copyKey
+        for (; i < parts.length; i++) {
+          if (parts[i][0] === ATTR_KEY) {
+            key = concat(key, parts[i][1])
+          } else if (parts[i][0] === VAR && parts[i][1] === ATTR_KEY) {
+            if (typeof parts[i][2] === 'object' && !key) {
+              for (copyKey in parts[i][2]) {
+                if (parts[i][2].hasOwnProperty(copyKey) && !cur[1][copyKey]) {
+                  cur[1][copyKey] = parts[i][2][copyKey]
+                }
+              }
+            } else {
+              key = concat(key, parts[i][2])
+            }
+          } else break
+        }
+        if (parts[i][0] === ATTR_EQ) i++
+        var j = i
+        for (; i < parts.length; i++) {
+          if (parts[i][0] === ATTR_VALUE || parts[i][0] === ATTR_KEY) {
+            if (!cur[1][key]) cur[1][key] = strfn(parts[i][1])
+            else parts[i][1]==="" || (cur[1][key] = concat(cur[1][key], parts[i][1]));
+          } else if (parts[i][0] === VAR
+          && (parts[i][1] === ATTR_VALUE || parts[i][1] === ATTR_KEY)) {
+            if (!cur[1][key]) cur[1][key] = strfn(parts[i][2])
+            else parts[i][2]==="" || (cur[1][key] = concat(cur[1][key], parts[i][2]));
+          } else {
+            if (key.length && !cur[1][key] && i === j
+            && (parts[i][0] === CLOSE || parts[i][0] === ATTR_BREAK)) {
+              // https://html.spec.whatwg.org/multipage/infrastructure.html#boolean-attributes
+              // empty string is falsy, not well behaved value in browser
+              cur[1][key] = key.toLowerCase()
+            }
+            if (parts[i][0] === CLOSE) {
+              i--
+            }
+            break
+          }
+        }
+      } else if (s === ATTR_KEY) {
+        cur[1][p[1]] = true
+      } else if (s === VAR && p[1] === ATTR_KEY) {
+        cur[1][p[2]] = true
+      } else if (s === CLOSE) {
+        if (selfClosing(cur[0]) && stack.length) {
+          var ix = stack[stack.length-1][1]
+          stack.pop()
+          stack[stack.length-1][0][2][ix] = h(
+            cur[0], cur[1], cur[2].length ? cur[2] : undefined
+          )
+        }
+      } else if (s === VAR && p[1] === TEXT) {
+        if (p[2] === undefined || p[2] === null) p[2] = ''
+        else if (!p[2]) p[2] = concat('', p[2])
+        if (Array.isArray(p[2][0])) {
+          cur[2].push.apply(cur[2], p[2])
+        } else {
+          cur[2].push(p[2])
+        }
+      } else if (s === TEXT) {
+        cur[2].push(p[1])
+      } else if (s === ATTR_EQ || s === ATTR_BREAK) {
+        // no-op
+      } else {
+        throw new Error('unhandled: ' + s)
+      }
+    }
+
+    if (tree[2].length > 1 && /^\s*$/.test(tree[2][0])) {
+      tree[2].shift()
+    }
+
+    if (tree[2].length > 2
+    || (tree[2].length === 2 && /\S/.test(tree[2][1]))) {
+      if (opts.createFragment) return opts.createFragment(tree[2])
+      throw new Error(
+        'multiple root elements must be wrapped in an enclosing tag'
+      )
+    }
+    if (Array.isArray(tree[2][0]) && typeof tree[2][0][0] === 'string'
+    && Array.isArray(tree[2][0][2])) {
+      tree[2][0] = h(tree[2][0][0], tree[2][0][1], tree[2][0][2])
+    }
+    return tree[2][0]
+
+    function parse (str) {
+      var res = []
+      if (state === ATTR_VALUE_W) state = ATTR
+      for (var i = 0; i < str.length; i++) {
+        var c = str.charAt(i)
+        if (state === TEXT && c === '<') {
+          if (reg.length) res.push([TEXT, reg])
+          reg = ''
+          state = OPEN
+        } else if (c === '>' && !quot(state) && state !== COMMENT) {
+          if (state === OPEN && reg.length) {
+            res.push([OPEN,reg])
+          } else if (state === ATTR_KEY) {
+            res.push([ATTR_KEY,reg])
+          } else if (state === ATTR_VALUE && reg.length) {
+            res.push([ATTR_VALUE,reg])
+          }
+          res.push([CLOSE])
+          reg = ''
+          state = TEXT
+        } else if (state === COMMENT && /-$/.test(reg) && c === '-') {
+          if (opts.comments) {
+            res.push([ATTR_VALUE,reg.substr(0, reg.length - 1)])
+          }
+          reg = ''
+          state = TEXT
+        } else if (state === OPEN && /^!--$/.test(reg)) {
+          if (opts.comments) {
+            res.push([OPEN, reg],[ATTR_KEY,'comment'],[ATTR_EQ])
+          }
+          reg = c
+          state = COMMENT
+        } else if (state === TEXT || state === COMMENT) {
+          reg += c
+        } else if (state === OPEN && c === '/' && reg.length) {
+          // no-op, self closing tag without a space <br/>
+        } else if (state === OPEN && /\s/.test(c)) {
+          if (reg.length) {
+            res.push([OPEN, reg])
+          }
+          reg = ''
+          state = ATTR
+        } else if (state === OPEN) {
+          reg += c
+        } else if (state === ATTR && /[^\s"'=/]/.test(c)) {
+          state = ATTR_KEY
+          reg = c
+        } else if (state === ATTR && /\s/.test(c)) {
+          if (reg.length) res.push([ATTR_KEY,reg])
+          res.push([ATTR_BREAK])
+        } else if (state === ATTR_KEY && /\s/.test(c)) {
+          res.push([ATTR_KEY,reg])
+          reg = ''
+          state = ATTR_KEY_W
+        } else if (state === ATTR_KEY && c === '=') {
+          res.push([ATTR_KEY,reg],[ATTR_EQ])
+          reg = ''
+          state = ATTR_VALUE_W
+        } else if (state === ATTR_KEY) {
+          reg += c
+        } else if ((state === ATTR_KEY_W || state === ATTR) && c === '=') {
+          res.push([ATTR_EQ])
+          state = ATTR_VALUE_W
+        } else if ((state === ATTR_KEY_W || state === ATTR) && !/\s/.test(c)) {
+          res.push([ATTR_BREAK])
+          if (/[\w-]/.test(c)) {
+            reg += c
+            state = ATTR_KEY
+          } else state = ATTR
+        } else if (state === ATTR_VALUE_W && c === '"') {
+          state = ATTR_VALUE_DQ
+        } else if (state === ATTR_VALUE_W && c === "'") {
+          state = ATTR_VALUE_SQ
+        } else if (state === ATTR_VALUE_DQ && c === '"') {
+          res.push([ATTR_VALUE,reg],[ATTR_BREAK])
+          reg = ''
+          state = ATTR
+        } else if (state === ATTR_VALUE_SQ && c === "'") {
+          res.push([ATTR_VALUE,reg],[ATTR_BREAK])
+          reg = ''
+          state = ATTR
+        } else if (state === ATTR_VALUE_W && !/\s/.test(c)) {
+          state = ATTR_VALUE
+          i--
+        } else if (state === ATTR_VALUE && /\s/.test(c)) {
+          res.push([ATTR_VALUE,reg],[ATTR_BREAK])
+          reg = ''
+          state = ATTR
+        } else if (state === ATTR_VALUE || state === ATTR_VALUE_SQ
+        || state === ATTR_VALUE_DQ) {
+          reg += c
+        }
+      }
+      if (state === TEXT && reg.length) {
+        res.push([TEXT,reg])
+        reg = ''
+      } else if (state === ATTR_VALUE && reg.length) {
+        res.push([ATTR_VALUE,reg])
+        reg = ''
+      } else if (state === ATTR_VALUE_DQ && reg.length) {
+        res.push([ATTR_VALUE,reg])
+        reg = ''
+      } else if (state === ATTR_VALUE_SQ && reg.length) {
+        res.push([ATTR_VALUE,reg])
+        reg = ''
+      } else if (state === ATTR_KEY) {
+        res.push([ATTR_KEY,reg])
+        reg = ''
+      }
+      return res
+    }
+  }
+
+  function strfn (x) {
+    if (typeof x === 'function') return x
+    else if (typeof x === 'string') return x
+    else if (x && typeof x === 'object') return x
+    else if (x === null || x === undefined) return x
+    else return concat('', x)
+  }
 }
 
-SafeBuffer.allocUnsafeSlow = function (size) {
-  if (typeof size !== 'number') {
-    throw new TypeError('Argument must be a number')
-  }
-  return buffer.SlowBuffer(size)
+function quot (state) {
+  return state === ATTR_VALUE_SQ || state === ATTR_VALUE_DQ
 }
 
-},{"buffer":415}],513:[function(require,module,exports){
+var closeRE = RegExp('^(' + [
+  'area', 'base', 'basefont', 'bgsound', 'br', 'col', 'command', 'embed',
+  'frame', 'hr', 'img', 'input', 'isindex', 'keygen', 'link', 'meta', 'param',
+  'source', 'track', 'wbr', '!--',
+  // SVG TAGS
+  'animate', 'animateTransform', 'circle', 'cursor', 'desc', 'ellipse',
+  'feBlend', 'feColorMatrix', 'feComposite',
+  'feConvolveMatrix', 'feDiffuseLighting', 'feDisplacementMap',
+  'feDistantLight', 'feFlood', 'feFuncA', 'feFuncB', 'feFuncG', 'feFuncR',
+  'feGaussianBlur', 'feImage', 'feMergeNode', 'feMorphology',
+  'feOffset', 'fePointLight', 'feSpecularLighting', 'feSpotLight', 'feTile',
+  'feTurbulence', 'font-face-format', 'font-face-name', 'font-face-uri',
+  'glyph', 'glyphRef', 'hkern', 'image', 'line', 'missing-glyph', 'mpath',
+  'path', 'polygon', 'polyline', 'rect', 'set', 'stop', 'tref', 'use', 'view',
+  'vkern'
+].join('|') + ')(?:[\.#][a-zA-Z0-9\u007F-\uFFFF_:-]+)*$')
+function selfClosing (tag) { return closeRE.test(tag) }
+
+},{"hyperscript-attribute-to-property":580}],582:[function(require,module,exports){
+'use strict'
+
+var trailingNewlineRegex = /\n[\s]+$/
+var leadingNewlineRegex = /^\n[\s]+/
+var trailingSpaceRegex = /[\s]+$/
+var leadingSpaceRegex = /^[\s]+/
+var multiSpaceRegex = /[\n\s]+/g
+
+var TEXT_TAGS = [
+  'a', 'abbr', 'b', 'bdi', 'bdo', 'br', 'cite', 'data', 'dfn', 'em', 'i',
+  'kbd', 'mark', 'q', 'rp', 'rt', 'rtc', 'ruby', 's', 'amp', 'small', 'span',
+  'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr'
+]
+
+var VERBATIM_TAGS = [
+  'code', 'pre', 'textarea'
+]
+
+module.exports = function appendChild (el, childs) {
+  if (!Array.isArray(childs)) return
+
+  var nodeName = el.nodeName.toLowerCase()
+
+  var hadText = false
+  var value, leader
+
+  for (var i = 0, len = childs.length; i < len; i++) {
+    var node = childs[i]
+    if (Array.isArray(node)) {
+      appendChild(el, node)
+      continue
+    }
+
+    if (typeof node === 'number' ||
+      typeof node === 'boolean' ||
+      typeof node === 'function' ||
+      node instanceof Date ||
+      node instanceof RegExp) {
+      node = node.toString()
+    }
+
+    var lastChild = el.childNodes[el.childNodes.length - 1]
+
+    // Iterate over text nodes
+    if (typeof node === 'string') {
+      hadText = true
+
+      // If we already had text, append to the existing text
+      if (lastChild && lastChild.nodeName === '#text') {
+        lastChild.nodeValue += node
+
+      // We didn't have a text node yet, create one
+      } else {
+        node = el.ownerDocument.createTextNode(node)
+        el.appendChild(node)
+        lastChild = node
+      }
+
+      // If this is the last of the child nodes, make sure we close it out
+      // right
+      if (i === len - 1) {
+        hadText = false
+        // Trim the child text nodes if the current node isn't a
+        // node where whitespace matters.
+        if (TEXT_TAGS.indexOf(nodeName) === -1 &&
+          VERBATIM_TAGS.indexOf(nodeName) === -1) {
+          value = lastChild.nodeValue
+            .replace(leadingNewlineRegex, '')
+            .replace(trailingSpaceRegex, '')
+            .replace(trailingNewlineRegex, '')
+            .replace(multiSpaceRegex, ' ')
+          if (value === '') {
+            el.removeChild(lastChild)
+          } else {
+            lastChild.nodeValue = value
+          }
+        } else if (VERBATIM_TAGS.indexOf(nodeName) === -1) {
+          // The very first node in the list should not have leading
+          // whitespace. Sibling text nodes should have whitespace if there
+          // was any.
+          leader = i === 0 ? '' : ' '
+          value = lastChild.nodeValue
+            .replace(leadingNewlineRegex, leader)
+            .replace(leadingSpaceRegex, ' ')
+            .replace(trailingSpaceRegex, '')
+            .replace(trailingNewlineRegex, '')
+            .replace(multiSpaceRegex, ' ')
+          lastChild.nodeValue = value
+        }
+      }
+
+    // Iterate over DOM nodes
+    } else if (node && node.nodeType) {
+      // If the last node was a text node, make sure it is properly closed out
+      if (hadText) {
+        hadText = false
+
+        // Trim the child text nodes if the current node isn't a
+        // text node or a code node
+        if (TEXT_TAGS.indexOf(nodeName) === -1 &&
+          VERBATIM_TAGS.indexOf(nodeName) === -1) {
+          value = lastChild.nodeValue
+            .replace(leadingNewlineRegex, '')
+            .replace(trailingNewlineRegex, ' ')
+            .replace(multiSpaceRegex, ' ')
+
+          // Remove empty text nodes, append otherwise
+          if (value === '') {
+            el.removeChild(lastChild)
+          } else {
+            lastChild.nodeValue = value
+          }
+        // Trim the child nodes but preserve the appropriate whitespace
+        } else if (VERBATIM_TAGS.indexOf(nodeName) === -1) {
+          value = lastChild.nodeValue
+            .replace(leadingSpaceRegex, ' ')
+            .replace(leadingNewlineRegex, '')
+            .replace(trailingNewlineRegex, ' ')
+            .replace(multiSpaceRegex, ' ')
+          lastChild.nodeValue = value
+        }
+      }
+
+      // Store the last nodename
+      var _nodeName = node.nodeName
+      if (_nodeName) nodeName = _nodeName.toLowerCase()
+
+      // Append the node to the DOM
+      el.appendChild(node)
+    }
+  }
+}
+
+},{}],583:[function(require,module,exports){
+'use strict'
+
+module.exports = [
+  'async', 'autofocus', 'autoplay', 'checked', 'controls', 'default',
+  'defaultchecked', 'defer', 'disabled', 'formnovalidate', 'hidden',
+  'ismap', 'loop', 'multiple', 'muted', 'novalidate', 'open', 'playsinline',
+  'readonly', 'required', 'reversed', 'selected'
+]
+
+},{}],584:[function(require,module,exports){
+module.exports = require('./dom')(document)
+
+},{"./dom":586}],585:[function(require,module,exports){
+'use strict'
+
+module.exports = [
+  'indeterminate'
+]
+
+},{}],586:[function(require,module,exports){
+'use strict'
+
+var hyperx = require('hyperx')
+var appendChild = require('./append-child')
+var SVG_TAGS = require('./svg-tags')
+var BOOL_PROPS = require('./bool-props')
+// Props that need to be set directly rather than with el.setAttribute()
+var DIRECT_PROPS = require('./direct-props')
+
+var SVGNS = 'http://www.w3.org/2000/svg'
+var XLINKNS = 'http://www.w3.org/1999/xlink'
+
+var COMMENT_TAG = '!--'
+
+module.exports = function (document) {
+  function nanoHtmlCreateElement (tag, props, children) {
+    var el
+
+    // If an svg tag, it needs a namespace
+    if (SVG_TAGS.indexOf(tag) !== -1) {
+      props.namespace = SVGNS
+    }
+
+    // If we are using a namespace
+    var ns = false
+    if (props.namespace) {
+      ns = props.namespace
+      delete props.namespace
+    }
+
+    // If we are extending a builtin element
+    var isCustomElement = false
+    if (props.is) {
+      isCustomElement = props.is
+      delete props.is
+    }
+
+    // Create the element
+    if (ns) {
+      if (isCustomElement) {
+        el = document.createElementNS(ns, tag, { is: isCustomElement })
+      } else {
+        el = document.createElementNS(ns, tag)
+      }
+    } else if (tag === COMMENT_TAG) {
+      return document.createComment(props.comment)
+    } else if (isCustomElement) {
+      el = document.createElement(tag, { is: isCustomElement })
+    } else {
+      el = document.createElement(tag)
+    }
+
+    // Create the properties
+    for (var p in props) {
+      if (props.hasOwnProperty(p)) {
+        var key = p.toLowerCase()
+        var val = props[p]
+        // Normalize className
+        if (key === 'classname') {
+          key = 'class'
+          p = 'class'
+        }
+        // The for attribute gets transformed to htmlFor, but we just set as for
+        if (p === 'htmlFor') {
+          p = 'for'
+        }
+        // If a property is boolean, set itself to the key
+        if (BOOL_PROPS.indexOf(key) !== -1) {
+          if (String(val) === 'true') val = key
+          else if (String(val) === 'false') continue
+        }
+        // If a property prefers being set directly vs setAttribute
+        if (key.slice(0, 2) === 'on' || DIRECT_PROPS.indexOf(key) !== -1) {
+          el[p] = val
+        } else {
+          if (ns) {
+            if (p === 'xlink:href') {
+              el.setAttributeNS(XLINKNS, p, val)
+            } else if (/^xmlns($|:)/i.test(p)) {
+              // skip xmlns definitions
+            } else {
+              el.setAttributeNS(null, p, val)
+            }
+          } else {
+            el.setAttribute(p, val)
+          }
+        }
+      }
+    }
+
+    appendChild(el, children)
+    return el
+  }
+
+  function createFragment (nodes) {
+    var fragment = document.createDocumentFragment()
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i] == null) continue
+      if (Array.isArray(nodes[i])) {
+        fragment.appendChild(createFragment(nodes[i]))
+      } else {
+        if (typeof nodes[i] === 'string') nodes[i] = document.createTextNode(nodes[i])
+        fragment.appendChild(nodes[i])
+      }
+    }
+    return fragment
+  }
+
+  var exports = hyperx(nanoHtmlCreateElement, {
+    comments: true,
+    createFragment: createFragment
+  })
+  exports.default = exports
+  exports.createComment = nanoHtmlCreateElement
+  return exports
+}
+
+},{"./append-child":582,"./bool-props":583,"./direct-props":585,"./svg-tags":587,"hyperx":581}],587:[function(require,module,exports){
+'use strict'
+
+module.exports = [
+  'svg', 'altGlyph', 'altGlyphDef', 'altGlyphItem', 'animate', 'animateColor',
+  'animateMotion', 'animateTransform', 'circle', 'clipPath', 'color-profile',
+  'cursor', 'defs', 'desc', 'ellipse', 'feBlend', 'feColorMatrix',
+  'feComponentTransfer', 'feComposite', 'feConvolveMatrix',
+  'feDiffuseLighting', 'feDisplacementMap', 'feDistantLight', 'feFlood',
+  'feFuncA', 'feFuncB', 'feFuncG', 'feFuncR', 'feGaussianBlur', 'feImage',
+  'feMerge', 'feMergeNode', 'feMorphology', 'feOffset', 'fePointLight',
+  'feSpecularLighting', 'feSpotLight', 'feTile', 'feTurbulence', 'filter',
+  'font', 'font-face', 'font-face-format', 'font-face-name', 'font-face-src',
+  'font-face-uri', 'foreignObject', 'g', 'glyph', 'glyphRef', 'hkern', 'image',
+  'line', 'linearGradient', 'marker', 'mask', 'metadata', 'missing-glyph',
+  'mpath', 'path', 'pattern', 'polygon', 'polyline', 'radialGradient', 'rect',
+  'set', 'stop', 'switch', 'symbol', 'text', 'textPath', 'title', 'tref',
+  'tspan', 'use', 'view', 'vkern'
+]
+
+},{}],588:[function(require,module,exports){
 'use strict';
 
 var GetIntrinsic = require('get-intrinsic');
@@ -25281,7 +29103,7 @@ module.exports = function getSideChannel() {
 	return channel;
 };
 
-},{"call-bind/callBound":417,"get-intrinsic":426,"object-inspect":514}],514:[function(require,module,exports){
+},{"call-bind/callBound":492,"get-intrinsic":500,"object-inspect":589}],589:[function(require,module,exports){
 var hasMap = typeof Map === 'function' && Map.prototype;
 var mapSizeDescriptor = Object.getOwnPropertyDescriptor && hasMap ? Object.getOwnPropertyDescriptor(Map.prototype, 'size') : null;
 var mapSize = hasMap && mapSizeDescriptor && typeof mapSizeDescriptor.get === 'function' ? mapSizeDescriptor.get : null;
@@ -25751,4174 +29573,790 @@ function arrObjKeys(obj, inspect) {
     return xs;
 }
 
-},{"./util.inspect":414}],515:[function(require,module,exports){
-(function (global){(function (){
-var ClientRequest = require('./lib/request')
-var response = require('./lib/response')
-var extend = require('xtend')
-var statusCodes = require('builtin-status-codes')
-var url = require('url')
-
-var http = exports
-
-http.request = function (opts, cb) {
-	if (typeof opts === 'string')
-		opts = url.parse(opts)
-	else
-		opts = extend(opts)
-
-	// Normally, the page is loaded from http or https, so not specifying a protocol
-	// will result in a (valid) protocol-relative url. However, this won't work if
-	// the protocol is something else, like 'file:'
-	var defaultProtocol = global.location.protocol.search(/^https?:$/) === -1 ? 'http:' : ''
-
-	var protocol = opts.protocol || defaultProtocol
-	var host = opts.hostname || opts.host
-	var port = opts.port
-	var path = opts.path || '/'
-
-	// Necessary for IPv6 addresses
-	if (host && host.indexOf(':') !== -1)
-		host = '[' + host + ']'
-
-	// This may be a relative url. The browser should always be able to interpret it correctly.
-	opts.url = (host ? (protocol + '//' + host) : '') + (port ? ':' + port : '') + path
-	opts.method = (opts.method || 'GET').toUpperCase()
-	opts.headers = opts.headers || {}
-
-	// Also valid opts.auth, opts.mode
-
-	var req = new ClientRequest(opts)
-	if (cb)
-		req.on('response', cb)
-	return req
-}
-
-http.get = function get (opts, cb) {
-	var req = http.request(opts, cb)
-	req.end()
-	return req
-}
-
-http.ClientRequest = ClientRequest
-http.IncomingMessage = response.IncomingMessage
-
-http.Agent = function () {}
-http.Agent.defaultMaxSockets = 4
-
-http.globalAgent = new http.Agent()
-
-http.STATUS_CODES = statusCodes
-
-http.METHODS = [
-	'CHECKOUT',
-	'CONNECT',
-	'COPY',
-	'DELETE',
-	'GET',
-	'HEAD',
-	'LOCK',
-	'M-SEARCH',
-	'MERGE',
-	'MKACTIVITY',
-	'MKCOL',
-	'MOVE',
-	'NOTIFY',
-	'OPTIONS',
-	'PATCH',
-	'POST',
-	'PROPFIND',
-	'PROPPATCH',
-	'PURGE',
-	'PUT',
-	'REPORT',
-	'SEARCH',
-	'SUBSCRIBE',
-	'TRACE',
-	'UNLOCK',
-	'UNSUBSCRIBE'
-]
-}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./lib/request":517,"./lib/response":518,"builtin-status-codes":416,"url":547,"xtend":550}],516:[function(require,module,exports){
-(function (global){(function (){
-exports.fetch = isFunction(global.fetch) && isFunction(global.ReadableStream)
-
-exports.writableStream = isFunction(global.WritableStream)
-
-exports.abortController = isFunction(global.AbortController)
-
-// The xhr request to example.com may violate some restrictive CSP configurations,
-// so if we're running in a browser that supports `fetch`, avoid calling getXHR()
-// and assume support for certain features below.
-var xhr
-function getXHR () {
-	// Cache the xhr value
-	if (xhr !== undefined) return xhr
-
-	if (global.XMLHttpRequest) {
-		xhr = new global.XMLHttpRequest()
-		// If XDomainRequest is available (ie only, where xhr might not work
-		// cross domain), use the page location. Otherwise use example.com
-		// Note: this doesn't actually make an http request.
-		try {
-			xhr.open('GET', global.XDomainRequest ? '/' : 'https://example.com')
-		} catch(e) {
-			xhr = null
-		}
-	} else {
-		// Service workers don't have XHR
-		xhr = null
-	}
-	return xhr
-}
-
-function checkTypeSupport (type) {
-	var xhr = getXHR()
-	if (!xhr) return false
-	try {
-		xhr.responseType = type
-		return xhr.responseType === type
-	} catch (e) {}
-	return false
-}
-
-// If fetch is supported, then arraybuffer will be supported too. Skip calling
-// checkTypeSupport(), since that calls getXHR().
-exports.arraybuffer = exports.fetch || checkTypeSupport('arraybuffer')
-
-// These next two tests unavoidably show warnings in Chrome. Since fetch will always
-// be used if it's available, just return false for these to avoid the warnings.
-exports.msstream = !exports.fetch && checkTypeSupport('ms-stream')
-exports.mozchunkedarraybuffer = !exports.fetch && checkTypeSupport('moz-chunked-arraybuffer')
-
-// If fetch is supported, then overrideMimeType will be supported too. Skip calling
-// getXHR().
-exports.overrideMimeType = exports.fetch || (getXHR() ? isFunction(getXHR().overrideMimeType) : false)
-
-function isFunction (value) {
-	return typeof value === 'function'
-}
-
-xhr = null // Help gc
-
-}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],517:[function(require,module,exports){
-(function (process,global,Buffer){(function (){
-var capability = require('./capability')
-var inherits = require('inherits')
-var response = require('./response')
-var stream = require('readable-stream')
-
-var IncomingMessage = response.IncomingMessage
-var rStates = response.readyStates
-
-function decideMode (preferBinary, useFetch) {
-	if (capability.fetch && useFetch) {
-		return 'fetch'
-	} else if (capability.mozchunkedarraybuffer) {
-		return 'moz-chunked-arraybuffer'
-	} else if (capability.msstream) {
-		return 'ms-stream'
-	} else if (capability.arraybuffer && preferBinary) {
-		return 'arraybuffer'
-	} else {
-		return 'text'
-	}
-}
-
-var ClientRequest = module.exports = function (opts) {
-	var self = this
-	stream.Writable.call(self)
-
-	self._opts = opts
-	self._body = []
-	self._headers = {}
-	if (opts.auth)
-		self.setHeader('Authorization', 'Basic ' + Buffer.from(opts.auth).toString('base64'))
-	Object.keys(opts.headers).forEach(function (name) {
-		self.setHeader(name, opts.headers[name])
-	})
-
-	var preferBinary
-	var useFetch = true
-	if (opts.mode === 'disable-fetch' || ('requestTimeout' in opts && !capability.abortController)) {
-		// If the use of XHR should be preferred. Not typically needed.
-		useFetch = false
-		preferBinary = true
-	} else if (opts.mode === 'prefer-streaming') {
-		// If streaming is a high priority but binary compatibility and
-		// the accuracy of the 'content-type' header aren't
-		preferBinary = false
-	} else if (opts.mode === 'allow-wrong-content-type') {
-		// If streaming is more important than preserving the 'content-type' header
-		preferBinary = !capability.overrideMimeType
-	} else if (!opts.mode || opts.mode === 'default' || opts.mode === 'prefer-fast') {
-		// Use binary if text streaming may corrupt data or the content-type header, or for speed
-		preferBinary = true
-	} else {
-		throw new Error('Invalid value for opts.mode')
-	}
-	self._mode = decideMode(preferBinary, useFetch)
-	self._fetchTimer = null
-	self._socketTimeout = null
-	self._socketTimer = null
-
-	self.on('finish', function () {
-		self._onFinish()
-	})
-}
-
-inherits(ClientRequest, stream.Writable)
-
-ClientRequest.prototype.setHeader = function (name, value) {
-	var self = this
-	var lowerName = name.toLowerCase()
-	// This check is not necessary, but it prevents warnings from browsers about setting unsafe
-	// headers. To be honest I'm not entirely sure hiding these warnings is a good thing, but
-	// http-browserify did it, so I will too.
-	if (unsafeHeaders.indexOf(lowerName) !== -1)
-		return
-
-	self._headers[lowerName] = {
-		name: name,
-		value: value
-	}
-}
-
-ClientRequest.prototype.getHeader = function (name) {
-	var header = this._headers[name.toLowerCase()]
-	if (header)
-		return header.value
-	return null
-}
-
-ClientRequest.prototype.removeHeader = function (name) {
-	var self = this
-	delete self._headers[name.toLowerCase()]
-}
-
-ClientRequest.prototype._onFinish = function () {
-	var self = this
-
-	if (self._destroyed)
-		return
-	var opts = self._opts
-
-	if ('timeout' in opts && opts.timeout !== 0) {
-		self.setTimeout(opts.timeout)
-	}
-
-	var headersObj = self._headers
-	var body = null
-	if (opts.method !== 'GET' && opts.method !== 'HEAD') {
-        body = new Blob(self._body, {
-            type: (headersObj['content-type'] || {}).value || ''
-        });
-    }
-
-	// create flattened list of headers
-	var headersList = []
-	Object.keys(headersObj).forEach(function (keyName) {
-		var name = headersObj[keyName].name
-		var value = headersObj[keyName].value
-		if (Array.isArray(value)) {
-			value.forEach(function (v) {
-				headersList.push([name, v])
-			})
-		} else {
-			headersList.push([name, value])
-		}
-	})
-
-	if (self._mode === 'fetch') {
-		var signal = null
-		if (capability.abortController) {
-			var controller = new AbortController()
-			signal = controller.signal
-			self._fetchAbortController = controller
-
-			if ('requestTimeout' in opts && opts.requestTimeout !== 0) {
-				self._fetchTimer = global.setTimeout(function () {
-					self.emit('requestTimeout')
-					if (self._fetchAbortController)
-						self._fetchAbortController.abort()
-				}, opts.requestTimeout)
-			}
-		}
-
-		global.fetch(self._opts.url, {
-			method: self._opts.method,
-			headers: headersList,
-			body: body || undefined,
-			mode: 'cors',
-			credentials: opts.withCredentials ? 'include' : 'same-origin',
-			signal: signal
-		}).then(function (response) {
-			self._fetchResponse = response
-			self._resetTimers(false)
-			self._connect()
-		}, function (reason) {
-			self._resetTimers(true)
-			if (!self._destroyed)
-				self.emit('error', reason)
-		})
-	} else {
-		var xhr = self._xhr = new global.XMLHttpRequest()
-		try {
-			xhr.open(self._opts.method, self._opts.url, true)
-		} catch (err) {
-			process.nextTick(function () {
-				self.emit('error', err)
-			})
-			return
-		}
-
-		// Can't set responseType on really old browsers
-		if ('responseType' in xhr)
-			xhr.responseType = self._mode
-
-		if ('withCredentials' in xhr)
-			xhr.withCredentials = !!opts.withCredentials
-
-		if (self._mode === 'text' && 'overrideMimeType' in xhr)
-			xhr.overrideMimeType('text/plain; charset=x-user-defined')
-
-		if ('requestTimeout' in opts) {
-			xhr.timeout = opts.requestTimeout
-			xhr.ontimeout = function () {
-				self.emit('requestTimeout')
-			}
-		}
-
-		headersList.forEach(function (header) {
-			xhr.setRequestHeader(header[0], header[1])
-		})
-
-		self._response = null
-		xhr.onreadystatechange = function () {
-			switch (xhr.readyState) {
-				case rStates.LOADING:
-				case rStates.DONE:
-					self._onXHRProgress()
-					break
-			}
-		}
-		// Necessary for streaming in Firefox, since xhr.response is ONLY defined
-		// in onprogress, not in onreadystatechange with xhr.readyState = 3
-		if (self._mode === 'moz-chunked-arraybuffer') {
-			xhr.onprogress = function () {
-				self._onXHRProgress()
-			}
-		}
-
-		xhr.onerror = function () {
-			if (self._destroyed)
-				return
-			self._resetTimers(true)
-			self.emit('error', new Error('XHR error'))
-		}
-
-		try {
-			xhr.send(body)
-		} catch (err) {
-			process.nextTick(function () {
-				self.emit('error', err)
-			})
-			return
-		}
-	}
-}
-
-/**
- * Checks if xhr.status is readable and non-zero, indicating no error.
- * Even though the spec says it should be available in readyState 3,
- * accessing it throws an exception in IE8
- */
-function statusValid (xhr) {
-	try {
-		var status = xhr.status
-		return (status !== null && status !== 0)
-	} catch (e) {
-		return false
-	}
-}
-
-ClientRequest.prototype._onXHRProgress = function () {
-	var self = this
-
-	self._resetTimers(false)
-
-	if (!statusValid(self._xhr) || self._destroyed)
-		return
-
-	if (!self._response)
-		self._connect()
-
-	self._response._onXHRProgress(self._resetTimers.bind(self))
-}
-
-ClientRequest.prototype._connect = function () {
-	var self = this
-
-	if (self._destroyed)
-		return
-
-	self._response = new IncomingMessage(self._xhr, self._fetchResponse, self._mode, self._resetTimers.bind(self))
-	self._response.on('error', function(err) {
-		self.emit('error', err)
-	})
-
-	self.emit('response', self._response)
-}
-
-ClientRequest.prototype._write = function (chunk, encoding, cb) {
-	var self = this
-
-	self._body.push(chunk)
-	cb()
-}
-
-ClientRequest.prototype._resetTimers = function (done) {
-	var self = this
-
-	global.clearTimeout(self._socketTimer)
-	self._socketTimer = null
-
-	if (done) {
-		global.clearTimeout(self._fetchTimer)
-		self._fetchTimer = null
-	} else if (self._socketTimeout) {
-		self._socketTimer = global.setTimeout(function () {
-			self.emit('timeout')
-		}, self._socketTimeout)
-	}
-}
-
-ClientRequest.prototype.abort = ClientRequest.prototype.destroy = function (err) {
-	var self = this
-	self._destroyed = true
-	self._resetTimers(true)
-	if (self._response)
-		self._response._destroyed = true
-	if (self._xhr)
-		self._xhr.abort()
-	else if (self._fetchAbortController)
-		self._fetchAbortController.abort()
-
-	if (err)
-		self.emit('error', err)
-}
-
-ClientRequest.prototype.end = function (data, encoding, cb) {
-	var self = this
-	if (typeof data === 'function') {
-		cb = data
-		data = undefined
-	}
-
-	stream.Writable.prototype.end.call(self, data, encoding, cb)
-}
-
-ClientRequest.prototype.setTimeout = function (timeout, cb) {
-	var self = this
-
-	if (cb)
-		self.once('timeout', cb)
-
-	self._socketTimeout = timeout
-	self._resetTimers(false)
-}
-
-ClientRequest.prototype.flushHeaders = function () {}
-ClientRequest.prototype.setNoDelay = function () {}
-ClientRequest.prototype.setSocketKeepAlive = function () {}
-
-// Taken from http://www.w3.org/TR/XMLHttpRequest/#the-setrequestheader%28%29-method
-var unsafeHeaders = [
-	'accept-charset',
-	'accept-encoding',
-	'access-control-request-headers',
-	'access-control-request-method',
-	'connection',
-	'content-length',
-	'cookie',
-	'cookie2',
-	'date',
-	'dnt',
-	'expect',
-	'host',
-	'keep-alive',
-	'origin',
-	'referer',
-	'te',
-	'trailer',
-	'transfer-encoding',
-	'upgrade',
-	'via'
-]
-
-}).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"./capability":516,"./response":518,"_process":507,"buffer":415,"inherits":519,"readable-stream":534}],518:[function(require,module,exports){
-(function (process,global,Buffer){(function (){
-var capability = require('./capability')
-var inherits = require('inherits')
-var stream = require('readable-stream')
-
-var rStates = exports.readyStates = {
-	UNSENT: 0,
-	OPENED: 1,
-	HEADERS_RECEIVED: 2,
-	LOADING: 3,
-	DONE: 4
-}
-
-var IncomingMessage = exports.IncomingMessage = function (xhr, response, mode, resetTimers) {
-	var self = this
-	stream.Readable.call(self)
-
-	self._mode = mode
-	self.headers = {}
-	self.rawHeaders = []
-	self.trailers = {}
-	self.rawTrailers = []
-
-	// Fake the 'close' event, but only once 'end' fires
-	self.on('end', function () {
-		// The nextTick is necessary to prevent the 'request' module from causing an infinite loop
-		process.nextTick(function () {
-			self.emit('close')
-		})
-	})
-
-	if (mode === 'fetch') {
-		self._fetchResponse = response
-
-		self.url = response.url
-		self.statusCode = response.status
-		self.statusMessage = response.statusText
-		
-		response.headers.forEach(function (header, key){
-			self.headers[key.toLowerCase()] = header
-			self.rawHeaders.push(key, header)
-		})
-
-		if (capability.writableStream) {
-			var writable = new WritableStream({
-				write: function (chunk) {
-					resetTimers(false)
-					return new Promise(function (resolve, reject) {
-						if (self._destroyed) {
-							reject()
-						} else if(self.push(Buffer.from(chunk))) {
-							resolve()
-						} else {
-							self._resumeFetch = resolve
-						}
-					})
-				},
-				close: function () {
-					resetTimers(true)
-					if (!self._destroyed)
-						self.push(null)
-				},
-				abort: function (err) {
-					resetTimers(true)
-					if (!self._destroyed)
-						self.emit('error', err)
-				}
-			})
-
-			try {
-				response.body.pipeTo(writable).catch(function (err) {
-					resetTimers(true)
-					if (!self._destroyed)
-						self.emit('error', err)
-				})
-				return
-			} catch (e) {} // pipeTo method isn't defined. Can't find a better way to feature test this
-		}
-		// fallback for when writableStream or pipeTo aren't available
-		var reader = response.body.getReader()
-		function read () {
-			reader.read().then(function (result) {
-				if (self._destroyed)
-					return
-				resetTimers(result.done)
-				if (result.done) {
-					self.push(null)
-					return
-				}
-				self.push(Buffer.from(result.value))
-				read()
-			}).catch(function (err) {
-				resetTimers(true)
-				if (!self._destroyed)
-					self.emit('error', err)
-			})
-		}
-		read()
-	} else {
-		self._xhr = xhr
-		self._pos = 0
-
-		self.url = xhr.responseURL
-		self.statusCode = xhr.status
-		self.statusMessage = xhr.statusText
-		var headers = xhr.getAllResponseHeaders().split(/\r?\n/)
-		headers.forEach(function (header) {
-			var matches = header.match(/^([^:]+):\s*(.*)/)
-			if (matches) {
-				var key = matches[1].toLowerCase()
-				if (key === 'set-cookie') {
-					if (self.headers[key] === undefined) {
-						self.headers[key] = []
-					}
-					self.headers[key].push(matches[2])
-				} else if (self.headers[key] !== undefined) {
-					self.headers[key] += ', ' + matches[2]
-				} else {
-					self.headers[key] = matches[2]
-				}
-				self.rawHeaders.push(matches[1], matches[2])
-			}
-		})
-
-		self._charset = 'x-user-defined'
-		if (!capability.overrideMimeType) {
-			var mimeType = self.rawHeaders['mime-type']
-			if (mimeType) {
-				var charsetMatch = mimeType.match(/;\s*charset=([^;])(;|$)/)
-				if (charsetMatch) {
-					self._charset = charsetMatch[1].toLowerCase()
-				}
-			}
-			if (!self._charset)
-				self._charset = 'utf-8' // best guess
-		}
-	}
-}
-
-inherits(IncomingMessage, stream.Readable)
-
-IncomingMessage.prototype._read = function () {
-	var self = this
-
-	var resolve = self._resumeFetch
-	if (resolve) {
-		self._resumeFetch = null
-		resolve()
-	}
-}
-
-IncomingMessage.prototype._onXHRProgress = function (resetTimers) {
-	var self = this
-
-	var xhr = self._xhr
-
-	var response = null
-	switch (self._mode) {
-		case 'text':
-			response = xhr.responseText
-			if (response.length > self._pos) {
-				var newData = response.substr(self._pos)
-				if (self._charset === 'x-user-defined') {
-					var buffer = Buffer.alloc(newData.length)
-					for (var i = 0; i < newData.length; i++)
-						buffer[i] = newData.charCodeAt(i) & 0xff
-
-					self.push(buffer)
-				} else {
-					self.push(newData, self._charset)
-				}
-				self._pos = response.length
-			}
-			break
-		case 'arraybuffer':
-			if (xhr.readyState !== rStates.DONE || !xhr.response)
-				break
-			response = xhr.response
-			self.push(Buffer.from(new Uint8Array(response)))
-			break
-		case 'moz-chunked-arraybuffer': // take whole
-			response = xhr.response
-			if (xhr.readyState !== rStates.LOADING || !response)
-				break
-			self.push(Buffer.from(new Uint8Array(response)))
-			break
-		case 'ms-stream':
-			response = xhr.response
-			if (xhr.readyState !== rStates.LOADING)
-				break
-			var reader = new global.MSStreamReader()
-			reader.onprogress = function () {
-				if (reader.result.byteLength > self._pos) {
-					self.push(Buffer.from(new Uint8Array(reader.result.slice(self._pos))))
-					self._pos = reader.result.byteLength
-				}
-			}
-			reader.onload = function () {
-				resetTimers(true)
-				self.push(null)
-			}
-			// reader.onerror = ??? // TODO: this
-			reader.readAsArrayBuffer(response)
-			break
-	}
-
-	// The ms-stream case handles end separately in reader.onload()
-	if (self._xhr.readyState === rStates.DONE && self._mode !== 'ms-stream') {
-		resetTimers(true)
-		self.push(null)
-	}
-}
-
-}).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer)
-},{"./capability":516,"_process":507,"buffer":415,"inherits":519,"readable-stream":534}],519:[function(require,module,exports){
-if (typeof Object.create === 'function') {
-  // implementation from standard node.js 'util' module
-  module.exports = function inherits(ctor, superCtor) {
-    if (superCtor) {
-      ctor.super_ = superCtor
-      ctor.prototype = Object.create(superCtor.prototype, {
-        constructor: {
-          value: ctor,
-          enumerable: false,
-          writable: true,
-          configurable: true
+},{"./util.inspect":491}],590:[function(require,module,exports){
+/*! Split.js - v1.6.4 */
+
+(function (global, factory) {
+    typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory() :
+    typeof define === 'function' && define.amd ? define(factory) :
+    (global = typeof globalThis !== 'undefined' ? globalThis : global || self, global.Split = factory());
+}(this, (function () { 'use strict';
+
+    // The programming goals of Split.js are to deliver readable, understandable and
+    // maintainable code, while at the same time manually optimizing for tiny minified file size,
+    // browser compatibility without additional requirements
+    // and very few assumptions about the user's page layout.
+    var global = typeof window !== 'undefined' ? window : null;
+    var ssr = global === null;
+    var document = !ssr ? global.document : undefined;
+
+    // Save a couple long function names that are used frequently.
+    // This optimization saves around 400 bytes.
+    var addEventListener = 'addEventListener';
+    var removeEventListener = 'removeEventListener';
+    var getBoundingClientRect = 'getBoundingClientRect';
+    var gutterStartDragging = '_a';
+    var aGutterSize = '_b';
+    var bGutterSize = '_c';
+    var HORIZONTAL = 'horizontal';
+    var NOOP = function () { return false; };
+
+    // Helper function determines which prefixes of CSS calc we need.
+    // We only need to do this once on startup, when this anonymous function is called.
+    //
+    // Tests -webkit, -moz and -o prefixes. Modified from StackOverflow:
+    // http://stackoverflow.com/questions/16625140/js-feature-detection-to-detect-the-usage-of-webkit-calc-over-calc/16625167#16625167
+    var calc = ssr
+        ? 'calc'
+        : ((['', '-webkit-', '-moz-', '-o-']
+              .filter(function (prefix) {
+                  var el = document.createElement('div');
+                  el.style.cssText = "width:" + prefix + "calc(9px)";
+
+                  return !!el.style.length
+              })
+              .shift()) + "calc");
+
+    // Helper function checks if its argument is a string-like type
+    var isString = function (v) { return typeof v === 'string' || v instanceof String; };
+
+    // Helper function allows elements and string selectors to be used
+    // interchangeably. In either case an element is returned. This allows us to
+    // do `Split([elem1, elem2])` as well as `Split(['#id1', '#id2'])`.
+    var elementOrSelector = function (el) {
+        if (isString(el)) {
+            var ele = document.querySelector(el);
+            if (!ele) {
+                throw new Error(("Selector " + el + " did not match a DOM element"))
+            }
+            return ele
         }
-      })
-    }
-  };
-} else {
-  // old school shim for old browsers
-  module.exports = function inherits(ctor, superCtor) {
-    if (superCtor) {
-      ctor.super_ = superCtor
-      var TempCtor = function () {}
-      TempCtor.prototype = superCtor.prototype
-      ctor.prototype = new TempCtor()
-      ctor.prototype.constructor = ctor
-    }
-  }
-}
 
-},{}],520:[function(require,module,exports){
-'use strict';
-
-function _inheritsLoose(subClass, superClass) { subClass.prototype = Object.create(superClass.prototype); subClass.prototype.constructor = subClass; subClass.__proto__ = superClass; }
-
-var codes = {};
-
-function createErrorType(code, message, Base) {
-  if (!Base) {
-    Base = Error;
-  }
-
-  function getMessage(arg1, arg2, arg3) {
-    if (typeof message === 'string') {
-      return message;
-    } else {
-      return message(arg1, arg2, arg3);
-    }
-  }
-
-  var NodeError =
-  /*#__PURE__*/
-  function (_Base) {
-    _inheritsLoose(NodeError, _Base);
-
-    function NodeError(arg1, arg2, arg3) {
-      return _Base.call(this, getMessage(arg1, arg2, arg3)) || this;
-    }
-
-    return NodeError;
-  }(Base);
-
-  NodeError.prototype.name = Base.name;
-  NodeError.prototype.code = code;
-  codes[code] = NodeError;
-} // https://github.com/nodejs/node/blob/v10.8.0/lib/internal/errors.js
-
-
-function oneOf(expected, thing) {
-  if (Array.isArray(expected)) {
-    var len = expected.length;
-    expected = expected.map(function (i) {
-      return String(i);
-    });
-
-    if (len > 2) {
-      return "one of ".concat(thing, " ").concat(expected.slice(0, len - 1).join(', '), ", or ") + expected[len - 1];
-    } else if (len === 2) {
-      return "one of ".concat(thing, " ").concat(expected[0], " or ").concat(expected[1]);
-    } else {
-      return "of ".concat(thing, " ").concat(expected[0]);
-    }
-  } else {
-    return "of ".concat(thing, " ").concat(String(expected));
-  }
-} // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/startsWith
-
-
-function startsWith(str, search, pos) {
-  return str.substr(!pos || pos < 0 ? 0 : +pos, search.length) === search;
-} // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/endsWith
-
-
-function endsWith(str, search, this_len) {
-  if (this_len === undefined || this_len > str.length) {
-    this_len = str.length;
-  }
-
-  return str.substring(this_len - search.length, this_len) === search;
-} // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/includes
-
-
-function includes(str, search, start) {
-  if (typeof start !== 'number') {
-    start = 0;
-  }
-
-  if (start + search.length > str.length) {
-    return false;
-  } else {
-    return str.indexOf(search, start) !== -1;
-  }
-}
-
-createErrorType('ERR_INVALID_OPT_VALUE', function (name, value) {
-  return 'The value "' + value + '" is invalid for option "' + name + '"';
-}, TypeError);
-createErrorType('ERR_INVALID_ARG_TYPE', function (name, expected, actual) {
-  // determiner: 'must be' or 'must not be'
-  var determiner;
-
-  if (typeof expected === 'string' && startsWith(expected, 'not ')) {
-    determiner = 'must not be';
-    expected = expected.replace(/^not /, '');
-  } else {
-    determiner = 'must be';
-  }
-
-  var msg;
-
-  if (endsWith(name, ' argument')) {
-    // For cases like 'first argument'
-    msg = "The ".concat(name, " ").concat(determiner, " ").concat(oneOf(expected, 'type'));
-  } else {
-    var type = includes(name, '.') ? 'property' : 'argument';
-    msg = "The \"".concat(name, "\" ").concat(type, " ").concat(determiner, " ").concat(oneOf(expected, 'type'));
-  }
-
-  msg += ". Received type ".concat(typeof actual);
-  return msg;
-}, TypeError);
-createErrorType('ERR_STREAM_PUSH_AFTER_EOF', 'stream.push() after EOF');
-createErrorType('ERR_METHOD_NOT_IMPLEMENTED', function (name) {
-  return 'The ' + name + ' method is not implemented';
-});
-createErrorType('ERR_STREAM_PREMATURE_CLOSE', 'Premature close');
-createErrorType('ERR_STREAM_DESTROYED', function (name) {
-  return 'Cannot call ' + name + ' after a stream was destroyed';
-});
-createErrorType('ERR_MULTIPLE_CALLBACK', 'Callback called multiple times');
-createErrorType('ERR_STREAM_CANNOT_PIPE', 'Cannot pipe, not readable');
-createErrorType('ERR_STREAM_WRITE_AFTER_END', 'write after end');
-createErrorType('ERR_STREAM_NULL_VALUES', 'May not write null values to stream', TypeError);
-createErrorType('ERR_UNKNOWN_ENCODING', function (arg) {
-  return 'Unknown encoding: ' + arg;
-}, TypeError);
-createErrorType('ERR_STREAM_UNSHIFT_AFTER_END_EVENT', 'stream.unshift() after end event');
-module.exports.codes = codes;
-
-},{}],521:[function(require,module,exports){
-(function (process){(function (){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-// a duplex stream is just a stream that is both readable and writable.
-// Since JS doesn't have multiple prototypal inheritance, this class
-// prototypally inherits from Readable, and then parasitically from
-// Writable.
-'use strict';
-/*<replacement>*/
-
-var objectKeys = Object.keys || function (obj) {
-  var keys = [];
-
-  for (var key in obj) {
-    keys.push(key);
-  }
-
-  return keys;
-};
-/*</replacement>*/
-
-
-module.exports = Duplex;
-
-var Readable = require('./_stream_readable');
-
-var Writable = require('./_stream_writable');
-
-require('inherits')(Duplex, Readable);
-
-{
-  // Allow the keys array to be GC'ed.
-  var keys = objectKeys(Writable.prototype);
-
-  for (var v = 0; v < keys.length; v++) {
-    var method = keys[v];
-    if (!Duplex.prototype[method]) Duplex.prototype[method] = Writable.prototype[method];
-  }
-}
-
-function Duplex(options) {
-  if (!(this instanceof Duplex)) return new Duplex(options);
-  Readable.call(this, options);
-  Writable.call(this, options);
-  this.allowHalfOpen = true;
-
-  if (options) {
-    if (options.readable === false) this.readable = false;
-    if (options.writable === false) this.writable = false;
-
-    if (options.allowHalfOpen === false) {
-      this.allowHalfOpen = false;
-      this.once('end', onend);
-    }
-  }
-}
-
-Object.defineProperty(Duplex.prototype, 'writableHighWaterMark', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._writableState.highWaterMark;
-  }
-});
-Object.defineProperty(Duplex.prototype, 'writableBuffer', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._writableState && this._writableState.getBuffer();
-  }
-});
-Object.defineProperty(Duplex.prototype, 'writableLength', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._writableState.length;
-  }
-}); // the no-half-open enforcer
-
-function onend() {
-  // If the writable side ended, then we're ok.
-  if (this._writableState.ended) return; // no more data can be written.
-  // But allow more writes to happen in this tick.
-
-  process.nextTick(onEndNT, this);
-}
-
-function onEndNT(self) {
-  self.end();
-}
-
-Object.defineProperty(Duplex.prototype, 'destroyed', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    if (this._readableState === undefined || this._writableState === undefined) {
-      return false;
-    }
-
-    return this._readableState.destroyed && this._writableState.destroyed;
-  },
-  set: function set(value) {
-    // we ignore the value if the stream
-    // has not been initialized yet
-    if (this._readableState === undefined || this._writableState === undefined) {
-      return;
-    } // backward compatibility, the user is explicitly
-    // managing destroyed
-
-
-    this._readableState.destroyed = value;
-    this._writableState.destroyed = value;
-  }
-});
-}).call(this)}).call(this,require('_process'))
-},{"./_stream_readable":523,"./_stream_writable":525,"_process":507,"inherits":519}],522:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-// a passthrough stream.
-// basically just the most minimal sort of Transform stream.
-// Every written chunk gets output as-is.
-'use strict';
-
-module.exports = PassThrough;
-
-var Transform = require('./_stream_transform');
-
-require('inherits')(PassThrough, Transform);
-
-function PassThrough(options) {
-  if (!(this instanceof PassThrough)) return new PassThrough(options);
-  Transform.call(this, options);
-}
-
-PassThrough.prototype._transform = function (chunk, encoding, cb) {
-  cb(null, chunk);
-};
-},{"./_stream_transform":524,"inherits":519}],523:[function(require,module,exports){
-(function (process,global){(function (){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-'use strict';
-
-module.exports = Readable;
-/*<replacement>*/
-
-var Duplex;
-/*</replacement>*/
-
-Readable.ReadableState = ReadableState;
-/*<replacement>*/
-
-var EE = require('events').EventEmitter;
-
-var EElistenerCount = function EElistenerCount(emitter, type) {
-  return emitter.listeners(type).length;
-};
-/*</replacement>*/
-
-/*<replacement>*/
-
-
-var Stream = require('./internal/streams/stream');
-/*</replacement>*/
-
-
-var Buffer = require('buffer').Buffer;
-
-var OurUint8Array = global.Uint8Array || function () {};
-
-function _uint8ArrayToBuffer(chunk) {
-  return Buffer.from(chunk);
-}
-
-function _isUint8Array(obj) {
-  return Buffer.isBuffer(obj) || obj instanceof OurUint8Array;
-}
-/*<replacement>*/
-
-
-var debugUtil = require('util');
-
-var debug;
-
-if (debugUtil && debugUtil.debuglog) {
-  debug = debugUtil.debuglog('stream');
-} else {
-  debug = function debug() {};
-}
-/*</replacement>*/
-
-
-var BufferList = require('./internal/streams/buffer_list');
-
-var destroyImpl = require('./internal/streams/destroy');
-
-var _require = require('./internal/streams/state'),
-    getHighWaterMark = _require.getHighWaterMark;
-
-var _require$codes = require('../errors').codes,
-    ERR_INVALID_ARG_TYPE = _require$codes.ERR_INVALID_ARG_TYPE,
-    ERR_STREAM_PUSH_AFTER_EOF = _require$codes.ERR_STREAM_PUSH_AFTER_EOF,
-    ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
-    ERR_STREAM_UNSHIFT_AFTER_END_EVENT = _require$codes.ERR_STREAM_UNSHIFT_AFTER_END_EVENT; // Lazy loaded to improve the startup performance.
-
-
-var StringDecoder;
-var createReadableStreamAsyncIterator;
-var from;
-
-require('inherits')(Readable, Stream);
-
-var errorOrDestroy = destroyImpl.errorOrDestroy;
-var kProxyEvents = ['error', 'close', 'destroy', 'pause', 'resume'];
-
-function prependListener(emitter, event, fn) {
-  // Sadly this is not cacheable as some libraries bundle their own
-  // event emitter implementation with them.
-  if (typeof emitter.prependListener === 'function') return emitter.prependListener(event, fn); // This is a hack to make sure that our error handler is attached before any
-  // userland ones.  NEVER DO THIS. This is here only because this code needs
-  // to continue to work with older versions of Node.js that do not include
-  // the prependListener() method. The goal is to eventually remove this hack.
-
-  if (!emitter._events || !emitter._events[event]) emitter.on(event, fn);else if (Array.isArray(emitter._events[event])) emitter._events[event].unshift(fn);else emitter._events[event] = [fn, emitter._events[event]];
-}
-
-function ReadableState(options, stream, isDuplex) {
-  Duplex = Duplex || require('./_stream_duplex');
-  options = options || {}; // Duplex streams are both readable and writable, but share
-  // the same options object.
-  // However, some cases require setting options to different
-  // values for the readable and the writable sides of the duplex stream.
-  // These options can be provided separately as readableXXX and writableXXX.
-
-  if (typeof isDuplex !== 'boolean') isDuplex = stream instanceof Duplex; // object stream flag. Used to make read(n) ignore n and to
-  // make all the buffer merging and length checks go away
-
-  this.objectMode = !!options.objectMode;
-  if (isDuplex) this.objectMode = this.objectMode || !!options.readableObjectMode; // the point at which it stops calling _read() to fill the buffer
-  // Note: 0 is a valid value, means "don't call _read preemptively ever"
-
-  this.highWaterMark = getHighWaterMark(this, options, 'readableHighWaterMark', isDuplex); // A linked list is used to store data chunks instead of an array because the
-  // linked list can remove elements from the beginning faster than
-  // array.shift()
-
-  this.buffer = new BufferList();
-  this.length = 0;
-  this.pipes = null;
-  this.pipesCount = 0;
-  this.flowing = null;
-  this.ended = false;
-  this.endEmitted = false;
-  this.reading = false; // a flag to be able to tell if the event 'readable'/'data' is emitted
-  // immediately, or on a later tick.  We set this to true at first, because
-  // any actions that shouldn't happen until "later" should generally also
-  // not happen before the first read call.
-
-  this.sync = true; // whenever we return null, then we set a flag to say
-  // that we're awaiting a 'readable' event emission.
-
-  this.needReadable = false;
-  this.emittedReadable = false;
-  this.readableListening = false;
-  this.resumeScheduled = false;
-  this.paused = true; // Should close be emitted on destroy. Defaults to true.
-
-  this.emitClose = options.emitClose !== false; // Should .destroy() be called after 'end' (and potentially 'finish')
-
-  this.autoDestroy = !!options.autoDestroy; // has it been destroyed
-
-  this.destroyed = false; // Crypto is kind of old and crusty.  Historically, its default string
-  // encoding is 'binary' so we have to make this configurable.
-  // Everything else in the universe uses 'utf8', though.
-
-  this.defaultEncoding = options.defaultEncoding || 'utf8'; // the number of writers that are awaiting a drain event in .pipe()s
-
-  this.awaitDrain = 0; // if true, a maybeReadMore has been scheduled
-
-  this.readingMore = false;
-  this.decoder = null;
-  this.encoding = null;
-
-  if (options.encoding) {
-    if (!StringDecoder) StringDecoder = require('string_decoder/').StringDecoder;
-    this.decoder = new StringDecoder(options.encoding);
-    this.encoding = options.encoding;
-  }
-}
-
-function Readable(options) {
-  Duplex = Duplex || require('./_stream_duplex');
-  if (!(this instanceof Readable)) return new Readable(options); // Checking for a Stream.Duplex instance is faster here instead of inside
-  // the ReadableState constructor, at least with V8 6.5
-
-  var isDuplex = this instanceof Duplex;
-  this._readableState = new ReadableState(options, this, isDuplex); // legacy
-
-  this.readable = true;
-
-  if (options) {
-    if (typeof options.read === 'function') this._read = options.read;
-    if (typeof options.destroy === 'function') this._destroy = options.destroy;
-  }
-
-  Stream.call(this);
-}
-
-Object.defineProperty(Readable.prototype, 'destroyed', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    if (this._readableState === undefined) {
-      return false;
-    }
-
-    return this._readableState.destroyed;
-  },
-  set: function set(value) {
-    // we ignore the value if the stream
-    // has not been initialized yet
-    if (!this._readableState) {
-      return;
-    } // backward compatibility, the user is explicitly
-    // managing destroyed
-
-
-    this._readableState.destroyed = value;
-  }
-});
-Readable.prototype.destroy = destroyImpl.destroy;
-Readable.prototype._undestroy = destroyImpl.undestroy;
-
-Readable.prototype._destroy = function (err, cb) {
-  cb(err);
-}; // Manually shove something into the read() buffer.
-// This returns true if the highWaterMark has not been hit yet,
-// similar to how Writable.write() returns true if you should
-// write() some more.
-
-
-Readable.prototype.push = function (chunk, encoding) {
-  var state = this._readableState;
-  var skipChunkCheck;
-
-  if (!state.objectMode) {
-    if (typeof chunk === 'string') {
-      encoding = encoding || state.defaultEncoding;
-
-      if (encoding !== state.encoding) {
-        chunk = Buffer.from(chunk, encoding);
-        encoding = '';
-      }
-
-      skipChunkCheck = true;
-    }
-  } else {
-    skipChunkCheck = true;
-  }
-
-  return readableAddChunk(this, chunk, encoding, false, skipChunkCheck);
-}; // Unshift should *always* be something directly out of read()
-
-
-Readable.prototype.unshift = function (chunk) {
-  return readableAddChunk(this, chunk, null, true, false);
-};
-
-function readableAddChunk(stream, chunk, encoding, addToFront, skipChunkCheck) {
-  debug('readableAddChunk', chunk);
-  var state = stream._readableState;
-
-  if (chunk === null) {
-    state.reading = false;
-    onEofChunk(stream, state);
-  } else {
-    var er;
-    if (!skipChunkCheck) er = chunkInvalid(state, chunk);
-
-    if (er) {
-      errorOrDestroy(stream, er);
-    } else if (state.objectMode || chunk && chunk.length > 0) {
-      if (typeof chunk !== 'string' && !state.objectMode && Object.getPrototypeOf(chunk) !== Buffer.prototype) {
-        chunk = _uint8ArrayToBuffer(chunk);
-      }
-
-      if (addToFront) {
-        if (state.endEmitted) errorOrDestroy(stream, new ERR_STREAM_UNSHIFT_AFTER_END_EVENT());else addChunk(stream, state, chunk, true);
-      } else if (state.ended) {
-        errorOrDestroy(stream, new ERR_STREAM_PUSH_AFTER_EOF());
-      } else if (state.destroyed) {
-        return false;
-      } else {
-        state.reading = false;
-
-        if (state.decoder && !encoding) {
-          chunk = state.decoder.write(chunk);
-          if (state.objectMode || chunk.length !== 0) addChunk(stream, state, chunk, false);else maybeReadMore(stream, state);
-        } else {
-          addChunk(stream, state, chunk, false);
-        }
-      }
-    } else if (!addToFront) {
-      state.reading = false;
-      maybeReadMore(stream, state);
-    }
-  } // We can push more data if we are below the highWaterMark.
-  // Also, if we have no data yet, we can stand some more bytes.
-  // This is to work around cases where hwm=0, such as the repl.
-
-
-  return !state.ended && (state.length < state.highWaterMark || state.length === 0);
-}
-
-function addChunk(stream, state, chunk, addToFront) {
-  if (state.flowing && state.length === 0 && !state.sync) {
-    state.awaitDrain = 0;
-    stream.emit('data', chunk);
-  } else {
-    // update the buffer info.
-    state.length += state.objectMode ? 1 : chunk.length;
-    if (addToFront) state.buffer.unshift(chunk);else state.buffer.push(chunk);
-    if (state.needReadable) emitReadable(stream);
-  }
-
-  maybeReadMore(stream, state);
-}
-
-function chunkInvalid(state, chunk) {
-  var er;
-
-  if (!_isUint8Array(chunk) && typeof chunk !== 'string' && chunk !== undefined && !state.objectMode) {
-    er = new ERR_INVALID_ARG_TYPE('chunk', ['string', 'Buffer', 'Uint8Array'], chunk);
-  }
-
-  return er;
-}
-
-Readable.prototype.isPaused = function () {
-  return this._readableState.flowing === false;
-}; // backwards compatibility.
-
-
-Readable.prototype.setEncoding = function (enc) {
-  if (!StringDecoder) StringDecoder = require('string_decoder/').StringDecoder;
-  var decoder = new StringDecoder(enc);
-  this._readableState.decoder = decoder; // If setEncoding(null), decoder.encoding equals utf8
-
-  this._readableState.encoding = this._readableState.decoder.encoding; // Iterate over current buffer to convert already stored Buffers:
-
-  var p = this._readableState.buffer.head;
-  var content = '';
-
-  while (p !== null) {
-    content += decoder.write(p.data);
-    p = p.next;
-  }
-
-  this._readableState.buffer.clear();
-
-  if (content !== '') this._readableState.buffer.push(content);
-  this._readableState.length = content.length;
-  return this;
-}; // Don't raise the hwm > 1GB
-
-
-var MAX_HWM = 0x40000000;
-
-function computeNewHighWaterMark(n) {
-  if (n >= MAX_HWM) {
-    // TODO(ronag): Throw ERR_VALUE_OUT_OF_RANGE.
-    n = MAX_HWM;
-  } else {
-    // Get the next highest power of 2 to prevent increasing hwm excessively in
-    // tiny amounts
-    n--;
-    n |= n >>> 1;
-    n |= n >>> 2;
-    n |= n >>> 4;
-    n |= n >>> 8;
-    n |= n >>> 16;
-    n++;
-  }
-
-  return n;
-} // This function is designed to be inlinable, so please take care when making
-// changes to the function body.
-
-
-function howMuchToRead(n, state) {
-  if (n <= 0 || state.length === 0 && state.ended) return 0;
-  if (state.objectMode) return 1;
-
-  if (n !== n) {
-    // Only flow one buffer at a time
-    if (state.flowing && state.length) return state.buffer.head.data.length;else return state.length;
-  } // If we're asking for more than the current hwm, then raise the hwm.
-
-
-  if (n > state.highWaterMark) state.highWaterMark = computeNewHighWaterMark(n);
-  if (n <= state.length) return n; // Don't have enough
-
-  if (!state.ended) {
-    state.needReadable = true;
-    return 0;
-  }
-
-  return state.length;
-} // you can override either this method, or the async _read(n) below.
-
-
-Readable.prototype.read = function (n) {
-  debug('read', n);
-  n = parseInt(n, 10);
-  var state = this._readableState;
-  var nOrig = n;
-  if (n !== 0) state.emittedReadable = false; // if we're doing read(0) to trigger a readable event, but we
-  // already have a bunch of data in the buffer, then just trigger
-  // the 'readable' event and move on.
-
-  if (n === 0 && state.needReadable && ((state.highWaterMark !== 0 ? state.length >= state.highWaterMark : state.length > 0) || state.ended)) {
-    debug('read: emitReadable', state.length, state.ended);
-    if (state.length === 0 && state.ended) endReadable(this);else emitReadable(this);
-    return null;
-  }
-
-  n = howMuchToRead(n, state); // if we've ended, and we're now clear, then finish it up.
-
-  if (n === 0 && state.ended) {
-    if (state.length === 0) endReadable(this);
-    return null;
-  } // All the actual chunk generation logic needs to be
-  // *below* the call to _read.  The reason is that in certain
-  // synthetic stream cases, such as passthrough streams, _read
-  // may be a completely synchronous operation which may change
-  // the state of the read buffer, providing enough data when
-  // before there was *not* enough.
-  //
-  // So, the steps are:
-  // 1. Figure out what the state of things will be after we do
-  // a read from the buffer.
-  //
-  // 2. If that resulting state will trigger a _read, then call _read.
-  // Note that this may be asynchronous, or synchronous.  Yes, it is
-  // deeply ugly to write APIs this way, but that still doesn't mean
-  // that the Readable class should behave improperly, as streams are
-  // designed to be sync/async agnostic.
-  // Take note if the _read call is sync or async (ie, if the read call
-  // has returned yet), so that we know whether or not it's safe to emit
-  // 'readable' etc.
-  //
-  // 3. Actually pull the requested chunks out of the buffer and return.
-  // if we need a readable event, then we need to do some reading.
-
-
-  var doRead = state.needReadable;
-  debug('need readable', doRead); // if we currently have less than the highWaterMark, then also read some
-
-  if (state.length === 0 || state.length - n < state.highWaterMark) {
-    doRead = true;
-    debug('length less than watermark', doRead);
-  } // however, if we've ended, then there's no point, and if we're already
-  // reading, then it's unnecessary.
-
-
-  if (state.ended || state.reading) {
-    doRead = false;
-    debug('reading or ended', doRead);
-  } else if (doRead) {
-    debug('do read');
-    state.reading = true;
-    state.sync = true; // if the length is currently zero, then we *need* a readable event.
-
-    if (state.length === 0) state.needReadable = true; // call internal read method
-
-    this._read(state.highWaterMark);
-
-    state.sync = false; // If _read pushed data synchronously, then `reading` will be false,
-    // and we need to re-evaluate how much data we can return to the user.
-
-    if (!state.reading) n = howMuchToRead(nOrig, state);
-  }
-
-  var ret;
-  if (n > 0) ret = fromList(n, state);else ret = null;
-
-  if (ret === null) {
-    state.needReadable = state.length <= state.highWaterMark;
-    n = 0;
-  } else {
-    state.length -= n;
-    state.awaitDrain = 0;
-  }
-
-  if (state.length === 0) {
-    // If we have nothing in the buffer, then we want to know
-    // as soon as we *do* get something into the buffer.
-    if (!state.ended) state.needReadable = true; // If we tried to read() past the EOF, then emit end on the next tick.
-
-    if (nOrig !== n && state.ended) endReadable(this);
-  }
-
-  if (ret !== null) this.emit('data', ret);
-  return ret;
-};
-
-function onEofChunk(stream, state) {
-  debug('onEofChunk');
-  if (state.ended) return;
-
-  if (state.decoder) {
-    var chunk = state.decoder.end();
-
-    if (chunk && chunk.length) {
-      state.buffer.push(chunk);
-      state.length += state.objectMode ? 1 : chunk.length;
-    }
-  }
-
-  state.ended = true;
-
-  if (state.sync) {
-    // if we are sync, wait until next tick to emit the data.
-    // Otherwise we risk emitting data in the flow()
-    // the readable code triggers during a read() call
-    emitReadable(stream);
-  } else {
-    // emit 'readable' now to make sure it gets picked up.
-    state.needReadable = false;
-
-    if (!state.emittedReadable) {
-      state.emittedReadable = true;
-      emitReadable_(stream);
-    }
-  }
-} // Don't emit readable right away in sync mode, because this can trigger
-// another read() call => stack overflow.  This way, it might trigger
-// a nextTick recursion warning, but that's not so bad.
-
-
-function emitReadable(stream) {
-  var state = stream._readableState;
-  debug('emitReadable', state.needReadable, state.emittedReadable);
-  state.needReadable = false;
-
-  if (!state.emittedReadable) {
-    debug('emitReadable', state.flowing);
-    state.emittedReadable = true;
-    process.nextTick(emitReadable_, stream);
-  }
-}
-
-function emitReadable_(stream) {
-  var state = stream._readableState;
-  debug('emitReadable_', state.destroyed, state.length, state.ended);
-
-  if (!state.destroyed && (state.length || state.ended)) {
-    stream.emit('readable');
-    state.emittedReadable = false;
-  } // The stream needs another readable event if
-  // 1. It is not flowing, as the flow mechanism will take
-  //    care of it.
-  // 2. It is not ended.
-  // 3. It is below the highWaterMark, so we can schedule
-  //    another readable later.
-
-
-  state.needReadable = !state.flowing && !state.ended && state.length <= state.highWaterMark;
-  flow(stream);
-} // at this point, the user has presumably seen the 'readable' event,
-// and called read() to consume some data.  that may have triggered
-// in turn another _read(n) call, in which case reading = true if
-// it's in progress.
-// However, if we're not ended, or reading, and the length < hwm,
-// then go ahead and try to read some more preemptively.
-
-
-function maybeReadMore(stream, state) {
-  if (!state.readingMore) {
-    state.readingMore = true;
-    process.nextTick(maybeReadMore_, stream, state);
-  }
-}
-
-function maybeReadMore_(stream, state) {
-  // Attempt to read more data if we should.
-  //
-  // The conditions for reading more data are (one of):
-  // - Not enough data buffered (state.length < state.highWaterMark). The loop
-  //   is responsible for filling the buffer with enough data if such data
-  //   is available. If highWaterMark is 0 and we are not in the flowing mode
-  //   we should _not_ attempt to buffer any extra data. We'll get more data
-  //   when the stream consumer calls read() instead.
-  // - No data in the buffer, and the stream is in flowing mode. In this mode
-  //   the loop below is responsible for ensuring read() is called. Failing to
-  //   call read here would abort the flow and there's no other mechanism for
-  //   continuing the flow if the stream consumer has just subscribed to the
-  //   'data' event.
-  //
-  // In addition to the above conditions to keep reading data, the following
-  // conditions prevent the data from being read:
-  // - The stream has ended (state.ended).
-  // - There is already a pending 'read' operation (state.reading). This is a
-  //   case where the the stream has called the implementation defined _read()
-  //   method, but they are processing the call asynchronously and have _not_
-  //   called push() with new data. In this case we skip performing more
-  //   read()s. The execution ends in this method again after the _read() ends
-  //   up calling push() with more data.
-  while (!state.reading && !state.ended && (state.length < state.highWaterMark || state.flowing && state.length === 0)) {
-    var len = state.length;
-    debug('maybeReadMore read 0');
-    stream.read(0);
-    if (len === state.length) // didn't get any data, stop spinning.
-      break;
-  }
-
-  state.readingMore = false;
-} // abstract method.  to be overridden in specific implementation classes.
-// call cb(er, data) where data is <= n in length.
-// for virtual (non-string, non-buffer) streams, "length" is somewhat
-// arbitrary, and perhaps not very meaningful.
-
-
-Readable.prototype._read = function (n) {
-  errorOrDestroy(this, new ERR_METHOD_NOT_IMPLEMENTED('_read()'));
-};
-
-Readable.prototype.pipe = function (dest, pipeOpts) {
-  var src = this;
-  var state = this._readableState;
-
-  switch (state.pipesCount) {
-    case 0:
-      state.pipes = dest;
-      break;
-
-    case 1:
-      state.pipes = [state.pipes, dest];
-      break;
-
-    default:
-      state.pipes.push(dest);
-      break;
-  }
-
-  state.pipesCount += 1;
-  debug('pipe count=%d opts=%j', state.pipesCount, pipeOpts);
-  var doEnd = (!pipeOpts || pipeOpts.end !== false) && dest !== process.stdout && dest !== process.stderr;
-  var endFn = doEnd ? onend : unpipe;
-  if (state.endEmitted) process.nextTick(endFn);else src.once('end', endFn);
-  dest.on('unpipe', onunpipe);
-
-  function onunpipe(readable, unpipeInfo) {
-    debug('onunpipe');
-
-    if (readable === src) {
-      if (unpipeInfo && unpipeInfo.hasUnpiped === false) {
-        unpipeInfo.hasUnpiped = true;
-        cleanup();
-      }
-    }
-  }
-
-  function onend() {
-    debug('onend');
-    dest.end();
-  } // when the dest drains, it reduces the awaitDrain counter
-  // on the source.  This would be more elegant with a .once()
-  // handler in flow(), but adding and removing repeatedly is
-  // too slow.
-
-
-  var ondrain = pipeOnDrain(src);
-  dest.on('drain', ondrain);
-  var cleanedUp = false;
-
-  function cleanup() {
-    debug('cleanup'); // cleanup event handlers once the pipe is broken
-
-    dest.removeListener('close', onclose);
-    dest.removeListener('finish', onfinish);
-    dest.removeListener('drain', ondrain);
-    dest.removeListener('error', onerror);
-    dest.removeListener('unpipe', onunpipe);
-    src.removeListener('end', onend);
-    src.removeListener('end', unpipe);
-    src.removeListener('data', ondata);
-    cleanedUp = true; // if the reader is waiting for a drain event from this
-    // specific writer, then it would cause it to never start
-    // flowing again.
-    // So, if this is awaiting a drain, then we just call it now.
-    // If we don't know, then assume that we are waiting for one.
-
-    if (state.awaitDrain && (!dest._writableState || dest._writableState.needDrain)) ondrain();
-  }
-
-  src.on('data', ondata);
-
-  function ondata(chunk) {
-    debug('ondata');
-    var ret = dest.write(chunk);
-    debug('dest.write', ret);
-
-    if (ret === false) {
-      // If the user unpiped during `dest.write()`, it is possible
-      // to get stuck in a permanently paused state if that write
-      // also returned false.
-      // => Check whether `dest` is still a piping destination.
-      if ((state.pipesCount === 1 && state.pipes === dest || state.pipesCount > 1 && indexOf(state.pipes, dest) !== -1) && !cleanedUp) {
-        debug('false write response, pause', state.awaitDrain);
-        state.awaitDrain++;
-      }
-
-      src.pause();
-    }
-  } // if the dest has an error, then stop piping into it.
-  // however, don't suppress the throwing behavior for this.
-
-
-  function onerror(er) {
-    debug('onerror', er);
-    unpipe();
-    dest.removeListener('error', onerror);
-    if (EElistenerCount(dest, 'error') === 0) errorOrDestroy(dest, er);
-  } // Make sure our error handler is attached before userland ones.
-
-
-  prependListener(dest, 'error', onerror); // Both close and finish should trigger unpipe, but only once.
-
-  function onclose() {
-    dest.removeListener('finish', onfinish);
-    unpipe();
-  }
-
-  dest.once('close', onclose);
-
-  function onfinish() {
-    debug('onfinish');
-    dest.removeListener('close', onclose);
-    unpipe();
-  }
-
-  dest.once('finish', onfinish);
-
-  function unpipe() {
-    debug('unpipe');
-    src.unpipe(dest);
-  } // tell the dest that it's being piped to
-
-
-  dest.emit('pipe', src); // start the flow if it hasn't been started already.
-
-  if (!state.flowing) {
-    debug('pipe resume');
-    src.resume();
-  }
-
-  return dest;
-};
-
-function pipeOnDrain(src) {
-  return function pipeOnDrainFunctionResult() {
-    var state = src._readableState;
-    debug('pipeOnDrain', state.awaitDrain);
-    if (state.awaitDrain) state.awaitDrain--;
-
-    if (state.awaitDrain === 0 && EElistenerCount(src, 'data')) {
-      state.flowing = true;
-      flow(src);
-    }
-  };
-}
-
-Readable.prototype.unpipe = function (dest) {
-  var state = this._readableState;
-  var unpipeInfo = {
-    hasUnpiped: false
-  }; // if we're not piping anywhere, then do nothing.
-
-  if (state.pipesCount === 0) return this; // just one destination.  most common case.
-
-  if (state.pipesCount === 1) {
-    // passed in one, but it's not the right one.
-    if (dest && dest !== state.pipes) return this;
-    if (!dest) dest = state.pipes; // got a match.
-
-    state.pipes = null;
-    state.pipesCount = 0;
-    state.flowing = false;
-    if (dest) dest.emit('unpipe', this, unpipeInfo);
-    return this;
-  } // slow case. multiple pipe destinations.
-
-
-  if (!dest) {
-    // remove all.
-    var dests = state.pipes;
-    var len = state.pipesCount;
-    state.pipes = null;
-    state.pipesCount = 0;
-    state.flowing = false;
-
-    for (var i = 0; i < len; i++) {
-      dests[i].emit('unpipe', this, {
-        hasUnpiped: false
-      });
-    }
-
-    return this;
-  } // try to find the right one.
-
-
-  var index = indexOf(state.pipes, dest);
-  if (index === -1) return this;
-  state.pipes.splice(index, 1);
-  state.pipesCount -= 1;
-  if (state.pipesCount === 1) state.pipes = state.pipes[0];
-  dest.emit('unpipe', this, unpipeInfo);
-  return this;
-}; // set up data events if they are asked for
-// Ensure readable listeners eventually get something
-
-
-Readable.prototype.on = function (ev, fn) {
-  var res = Stream.prototype.on.call(this, ev, fn);
-  var state = this._readableState;
-
-  if (ev === 'data') {
-    // update readableListening so that resume() may be a no-op
-    // a few lines down. This is needed to support once('readable').
-    state.readableListening = this.listenerCount('readable') > 0; // Try start flowing on next tick if stream isn't explicitly paused
-
-    if (state.flowing !== false) this.resume();
-  } else if (ev === 'readable') {
-    if (!state.endEmitted && !state.readableListening) {
-      state.readableListening = state.needReadable = true;
-      state.flowing = false;
-      state.emittedReadable = false;
-      debug('on readable', state.length, state.reading);
-
-      if (state.length) {
-        emitReadable(this);
-      } else if (!state.reading) {
-        process.nextTick(nReadingNextTick, this);
-      }
-    }
-  }
-
-  return res;
-};
-
-Readable.prototype.addListener = Readable.prototype.on;
-
-Readable.prototype.removeListener = function (ev, fn) {
-  var res = Stream.prototype.removeListener.call(this, ev, fn);
-
-  if (ev === 'readable') {
-    // We need to check if there is someone still listening to
-    // readable and reset the state. However this needs to happen
-    // after readable has been emitted but before I/O (nextTick) to
-    // support once('readable', fn) cycles. This means that calling
-    // resume within the same tick will have no
-    // effect.
-    process.nextTick(updateReadableListening, this);
-  }
-
-  return res;
-};
-
-Readable.prototype.removeAllListeners = function (ev) {
-  var res = Stream.prototype.removeAllListeners.apply(this, arguments);
-
-  if (ev === 'readable' || ev === undefined) {
-    // We need to check if there is someone still listening to
-    // readable and reset the state. However this needs to happen
-    // after readable has been emitted but before I/O (nextTick) to
-    // support once('readable', fn) cycles. This means that calling
-    // resume within the same tick will have no
-    // effect.
-    process.nextTick(updateReadableListening, this);
-  }
-
-  return res;
-};
-
-function updateReadableListening(self) {
-  var state = self._readableState;
-  state.readableListening = self.listenerCount('readable') > 0;
-
-  if (state.resumeScheduled && !state.paused) {
-    // flowing needs to be set to true now, otherwise
-    // the upcoming resume will not flow.
-    state.flowing = true; // crude way to check if we should resume
-  } else if (self.listenerCount('data') > 0) {
-    self.resume();
-  }
-}
-
-function nReadingNextTick(self) {
-  debug('readable nexttick read 0');
-  self.read(0);
-} // pause() and resume() are remnants of the legacy readable stream API
-// If the user uses them, then switch into old mode.
-
-
-Readable.prototype.resume = function () {
-  var state = this._readableState;
-
-  if (!state.flowing) {
-    debug('resume'); // we flow only if there is no one listening
-    // for readable, but we still have to call
-    // resume()
-
-    state.flowing = !state.readableListening;
-    resume(this, state);
-  }
-
-  state.paused = false;
-  return this;
-};
-
-function resume(stream, state) {
-  if (!state.resumeScheduled) {
-    state.resumeScheduled = true;
-    process.nextTick(resume_, stream, state);
-  }
-}
-
-function resume_(stream, state) {
-  debug('resume', state.reading);
-
-  if (!state.reading) {
-    stream.read(0);
-  }
-
-  state.resumeScheduled = false;
-  stream.emit('resume');
-  flow(stream);
-  if (state.flowing && !state.reading) stream.read(0);
-}
-
-Readable.prototype.pause = function () {
-  debug('call pause flowing=%j', this._readableState.flowing);
-
-  if (this._readableState.flowing !== false) {
-    debug('pause');
-    this._readableState.flowing = false;
-    this.emit('pause');
-  }
-
-  this._readableState.paused = true;
-  return this;
-};
-
-function flow(stream) {
-  var state = stream._readableState;
-  debug('flow', state.flowing);
-
-  while (state.flowing && stream.read() !== null) {
-    ;
-  }
-} // wrap an old-style stream as the async data source.
-// This is *not* part of the readable stream interface.
-// It is an ugly unfortunate mess of history.
-
-
-Readable.prototype.wrap = function (stream) {
-  var _this = this;
-
-  var state = this._readableState;
-  var paused = false;
-  stream.on('end', function () {
-    debug('wrapped end');
-
-    if (state.decoder && !state.ended) {
-      var chunk = state.decoder.end();
-      if (chunk && chunk.length) _this.push(chunk);
-    }
-
-    _this.push(null);
-  });
-  stream.on('data', function (chunk) {
-    debug('wrapped data');
-    if (state.decoder) chunk = state.decoder.write(chunk); // don't skip over falsy values in objectMode
-
-    if (state.objectMode && (chunk === null || chunk === undefined)) return;else if (!state.objectMode && (!chunk || !chunk.length)) return;
-
-    var ret = _this.push(chunk);
-
-    if (!ret) {
-      paused = true;
-      stream.pause();
-    }
-  }); // proxy all the other methods.
-  // important when wrapping filters and duplexes.
-
-  for (var i in stream) {
-    if (this[i] === undefined && typeof stream[i] === 'function') {
-      this[i] = function methodWrap(method) {
-        return function methodWrapReturnFunction() {
-          return stream[method].apply(stream, arguments);
-        };
-      }(i);
-    }
-  } // proxy certain important events.
-
-
-  for (var n = 0; n < kProxyEvents.length; n++) {
-    stream.on(kProxyEvents[n], this.emit.bind(this, kProxyEvents[n]));
-  } // when we try to consume some more bytes, simply unpause the
-  // underlying stream.
-
-
-  this._read = function (n) {
-    debug('wrapped _read', n);
-
-    if (paused) {
-      paused = false;
-      stream.resume();
-    }
-  };
-
-  return this;
-};
-
-if (typeof Symbol === 'function') {
-  Readable.prototype[Symbol.asyncIterator] = function () {
-    if (createReadableStreamAsyncIterator === undefined) {
-      createReadableStreamAsyncIterator = require('./internal/streams/async_iterator');
-    }
-
-    return createReadableStreamAsyncIterator(this);
-  };
-}
-
-Object.defineProperty(Readable.prototype, 'readableHighWaterMark', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._readableState.highWaterMark;
-  }
-});
-Object.defineProperty(Readable.prototype, 'readableBuffer', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._readableState && this._readableState.buffer;
-  }
-});
-Object.defineProperty(Readable.prototype, 'readableFlowing', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._readableState.flowing;
-  },
-  set: function set(state) {
-    if (this._readableState) {
-      this._readableState.flowing = state;
-    }
-  }
-}); // exposed for testing purposes only.
-
-Readable._fromList = fromList;
-Object.defineProperty(Readable.prototype, 'readableLength', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._readableState.length;
-  }
-}); // Pluck off n bytes from an array of buffers.
-// Length is the combined lengths of all the buffers in the list.
-// This function is designed to be inlinable, so please take care when making
-// changes to the function body.
-
-function fromList(n, state) {
-  // nothing buffered
-  if (state.length === 0) return null;
-  var ret;
-  if (state.objectMode) ret = state.buffer.shift();else if (!n || n >= state.length) {
-    // read it all, truncate the list
-    if (state.decoder) ret = state.buffer.join('');else if (state.buffer.length === 1) ret = state.buffer.first();else ret = state.buffer.concat(state.length);
-    state.buffer.clear();
-  } else {
-    // read part of list
-    ret = state.buffer.consume(n, state.decoder);
-  }
-  return ret;
-}
-
-function endReadable(stream) {
-  var state = stream._readableState;
-  debug('endReadable', state.endEmitted);
-
-  if (!state.endEmitted) {
-    state.ended = true;
-    process.nextTick(endReadableNT, state, stream);
-  }
-}
-
-function endReadableNT(state, stream) {
-  debug('endReadableNT', state.endEmitted, state.length); // Check that we didn't get one last unshift.
-
-  if (!state.endEmitted && state.length === 0) {
-    state.endEmitted = true;
-    stream.readable = false;
-    stream.emit('end');
-
-    if (state.autoDestroy) {
-      // In case of duplex streams we need a way to detect
-      // if the writable side is ready for autoDestroy as well
-      var wState = stream._writableState;
-
-      if (!wState || wState.autoDestroy && wState.finished) {
-        stream.destroy();
-      }
-    }
-  }
-}
-
-if (typeof Symbol === 'function') {
-  Readable.from = function (iterable, opts) {
-    if (from === undefined) {
-      from = require('./internal/streams/from');
-    }
-
-    return from(Readable, iterable, opts);
-  };
-}
-
-function indexOf(xs, x) {
-  for (var i = 0, l = xs.length; i < l; i++) {
-    if (xs[i] === x) return i;
-  }
-
-  return -1;
-}
-}).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":520,"./_stream_duplex":521,"./internal/streams/async_iterator":526,"./internal/streams/buffer_list":527,"./internal/streams/destroy":528,"./internal/streams/from":530,"./internal/streams/state":532,"./internal/streams/stream":533,"_process":507,"buffer":415,"events":422,"inherits":519,"string_decoder/":535,"util":414}],524:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-// a transform stream is a readable/writable stream where you do
-// something with the data.  Sometimes it's called a "filter",
-// but that's not a great name for it, since that implies a thing where
-// some bits pass through, and others are simply ignored.  (That would
-// be a valid example of a transform, of course.)
-//
-// While the output is causally related to the input, it's not a
-// necessarily symmetric or synchronous transformation.  For example,
-// a zlib stream might take multiple plain-text writes(), and then
-// emit a single compressed chunk some time in the future.
-//
-// Here's how this works:
-//
-// The Transform stream has all the aspects of the readable and writable
-// stream classes.  When you write(chunk), that calls _write(chunk,cb)
-// internally, and returns false if there's a lot of pending writes
-// buffered up.  When you call read(), that calls _read(n) until
-// there's enough pending readable data buffered up.
-//
-// In a transform stream, the written data is placed in a buffer.  When
-// _read(n) is called, it transforms the queued up data, calling the
-// buffered _write cb's as it consumes chunks.  If consuming a single
-// written chunk would result in multiple output chunks, then the first
-// outputted bit calls the readcb, and subsequent chunks just go into
-// the read buffer, and will cause it to emit 'readable' if necessary.
-//
-// This way, back-pressure is actually determined by the reading side,
-// since _read has to be called to start processing a new chunk.  However,
-// a pathological inflate type of transform can cause excessive buffering
-// here.  For example, imagine a stream where every byte of input is
-// interpreted as an integer from 0-255, and then results in that many
-// bytes of output.  Writing the 4 bytes {ff,ff,ff,ff} would result in
-// 1kb of data being output.  In this case, you could write a very small
-// amount of input, and end up with a very large amount of output.  In
-// such a pathological inflating mechanism, there'd be no way to tell
-// the system to stop doing the transform.  A single 4MB write could
-// cause the system to run out of memory.
-//
-// However, even in such a pathological case, only a single written chunk
-// would be consumed, and then the rest would wait (un-transformed) until
-// the results of the previous transformed chunk were consumed.
-'use strict';
-
-module.exports = Transform;
-
-var _require$codes = require('../errors').codes,
-    ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
-    ERR_MULTIPLE_CALLBACK = _require$codes.ERR_MULTIPLE_CALLBACK,
-    ERR_TRANSFORM_ALREADY_TRANSFORMING = _require$codes.ERR_TRANSFORM_ALREADY_TRANSFORMING,
-    ERR_TRANSFORM_WITH_LENGTH_0 = _require$codes.ERR_TRANSFORM_WITH_LENGTH_0;
-
-var Duplex = require('./_stream_duplex');
-
-require('inherits')(Transform, Duplex);
-
-function afterTransform(er, data) {
-  var ts = this._transformState;
-  ts.transforming = false;
-  var cb = ts.writecb;
-
-  if (cb === null) {
-    return this.emit('error', new ERR_MULTIPLE_CALLBACK());
-  }
-
-  ts.writechunk = null;
-  ts.writecb = null;
-  if (data != null) // single equals check for both `null` and `undefined`
-    this.push(data);
-  cb(er);
-  var rs = this._readableState;
-  rs.reading = false;
-
-  if (rs.needReadable || rs.length < rs.highWaterMark) {
-    this._read(rs.highWaterMark);
-  }
-}
-
-function Transform(options) {
-  if (!(this instanceof Transform)) return new Transform(options);
-  Duplex.call(this, options);
-  this._transformState = {
-    afterTransform: afterTransform.bind(this),
-    needTransform: false,
-    transforming: false,
-    writecb: null,
-    writechunk: null,
-    writeencoding: null
-  }; // start out asking for a readable event once data is transformed.
-
-  this._readableState.needReadable = true; // we have implemented the _read method, and done the other things
-  // that Readable wants before the first _read call, so unset the
-  // sync guard flag.
-
-  this._readableState.sync = false;
-
-  if (options) {
-    if (typeof options.transform === 'function') this._transform = options.transform;
-    if (typeof options.flush === 'function') this._flush = options.flush;
-  } // When the writable side finishes, then flush out anything remaining.
-
-
-  this.on('prefinish', prefinish);
-}
-
-function prefinish() {
-  var _this = this;
-
-  if (typeof this._flush === 'function' && !this._readableState.destroyed) {
-    this._flush(function (er, data) {
-      done(_this, er, data);
-    });
-  } else {
-    done(this, null, null);
-  }
-}
-
-Transform.prototype.push = function (chunk, encoding) {
-  this._transformState.needTransform = false;
-  return Duplex.prototype.push.call(this, chunk, encoding);
-}; // This is the part where you do stuff!
-// override this function in implementation classes.
-// 'chunk' is an input chunk.
-//
-// Call `push(newChunk)` to pass along transformed output
-// to the readable side.  You may call 'push' zero or more times.
-//
-// Call `cb(err)` when you are done with this chunk.  If you pass
-// an error, then that'll put the hurt on the whole operation.  If you
-// never call cb(), then you'll never get another chunk.
-
-
-Transform.prototype._transform = function (chunk, encoding, cb) {
-  cb(new ERR_METHOD_NOT_IMPLEMENTED('_transform()'));
-};
-
-Transform.prototype._write = function (chunk, encoding, cb) {
-  var ts = this._transformState;
-  ts.writecb = cb;
-  ts.writechunk = chunk;
-  ts.writeencoding = encoding;
-
-  if (!ts.transforming) {
-    var rs = this._readableState;
-    if (ts.needTransform || rs.needReadable || rs.length < rs.highWaterMark) this._read(rs.highWaterMark);
-  }
-}; // Doesn't matter what the args are here.
-// _transform does all the work.
-// That we got here means that the readable side wants more data.
-
-
-Transform.prototype._read = function (n) {
-  var ts = this._transformState;
-
-  if (ts.writechunk !== null && !ts.transforming) {
-    ts.transforming = true;
-
-    this._transform(ts.writechunk, ts.writeencoding, ts.afterTransform);
-  } else {
-    // mark that we need a transform, so that any data that comes in
-    // will get processed, now that we've asked for it.
-    ts.needTransform = true;
-  }
-};
-
-Transform.prototype._destroy = function (err, cb) {
-  Duplex.prototype._destroy.call(this, err, function (err2) {
-    cb(err2);
-  });
-};
-
-function done(stream, er, data) {
-  if (er) return stream.emit('error', er);
-  if (data != null) // single equals check for both `null` and `undefined`
-    stream.push(data); // TODO(BridgeAR): Write a test for these two error cases
-  // if there's nothing in the write buffer, then that means
-  // that nothing more will ever be provided
-
-  if (stream._writableState.length) throw new ERR_TRANSFORM_WITH_LENGTH_0();
-  if (stream._transformState.transforming) throw new ERR_TRANSFORM_ALREADY_TRANSFORMING();
-  return stream.push(null);
-}
-},{"../errors":520,"./_stream_duplex":521,"inherits":519}],525:[function(require,module,exports){
-(function (process,global){(function (){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-// A bit simpler than readable streams.
-// Implement an async ._write(chunk, encoding, cb), and it'll handle all
-// the drain event emission and buffering.
-'use strict';
-
-module.exports = Writable;
-/* <replacement> */
-
-function WriteReq(chunk, encoding, cb) {
-  this.chunk = chunk;
-  this.encoding = encoding;
-  this.callback = cb;
-  this.next = null;
-} // It seems a linked list but it is not
-// there will be only 2 of these for each stream
-
-
-function CorkedRequest(state) {
-  var _this = this;
-
-  this.next = null;
-  this.entry = null;
-
-  this.finish = function () {
-    onCorkedFinish(_this, state);
-  };
-}
-/* </replacement> */
-
-/*<replacement>*/
-
-
-var Duplex;
-/*</replacement>*/
-
-Writable.WritableState = WritableState;
-/*<replacement>*/
-
-var internalUtil = {
-  deprecate: require('util-deprecate')
-};
-/*</replacement>*/
-
-/*<replacement>*/
-
-var Stream = require('./internal/streams/stream');
-/*</replacement>*/
-
-
-var Buffer = require('buffer').Buffer;
-
-var OurUint8Array = global.Uint8Array || function () {};
-
-function _uint8ArrayToBuffer(chunk) {
-  return Buffer.from(chunk);
-}
-
-function _isUint8Array(obj) {
-  return Buffer.isBuffer(obj) || obj instanceof OurUint8Array;
-}
-
-var destroyImpl = require('./internal/streams/destroy');
-
-var _require = require('./internal/streams/state'),
-    getHighWaterMark = _require.getHighWaterMark;
-
-var _require$codes = require('../errors').codes,
-    ERR_INVALID_ARG_TYPE = _require$codes.ERR_INVALID_ARG_TYPE,
-    ERR_METHOD_NOT_IMPLEMENTED = _require$codes.ERR_METHOD_NOT_IMPLEMENTED,
-    ERR_MULTIPLE_CALLBACK = _require$codes.ERR_MULTIPLE_CALLBACK,
-    ERR_STREAM_CANNOT_PIPE = _require$codes.ERR_STREAM_CANNOT_PIPE,
-    ERR_STREAM_DESTROYED = _require$codes.ERR_STREAM_DESTROYED,
-    ERR_STREAM_NULL_VALUES = _require$codes.ERR_STREAM_NULL_VALUES,
-    ERR_STREAM_WRITE_AFTER_END = _require$codes.ERR_STREAM_WRITE_AFTER_END,
-    ERR_UNKNOWN_ENCODING = _require$codes.ERR_UNKNOWN_ENCODING;
-
-var errorOrDestroy = destroyImpl.errorOrDestroy;
-
-require('inherits')(Writable, Stream);
-
-function nop() {}
-
-function WritableState(options, stream, isDuplex) {
-  Duplex = Duplex || require('./_stream_duplex');
-  options = options || {}; // Duplex streams are both readable and writable, but share
-  // the same options object.
-  // However, some cases require setting options to different
-  // values for the readable and the writable sides of the duplex stream,
-  // e.g. options.readableObjectMode vs. options.writableObjectMode, etc.
-
-  if (typeof isDuplex !== 'boolean') isDuplex = stream instanceof Duplex; // object stream flag to indicate whether or not this stream
-  // contains buffers or objects.
-
-  this.objectMode = !!options.objectMode;
-  if (isDuplex) this.objectMode = this.objectMode || !!options.writableObjectMode; // the point at which write() starts returning false
-  // Note: 0 is a valid value, means that we always return false if
-  // the entire buffer is not flushed immediately on write()
-
-  this.highWaterMark = getHighWaterMark(this, options, 'writableHighWaterMark', isDuplex); // if _final has been called
-
-  this.finalCalled = false; // drain event flag.
-
-  this.needDrain = false; // at the start of calling end()
-
-  this.ending = false; // when end() has been called, and returned
-
-  this.ended = false; // when 'finish' is emitted
-
-  this.finished = false; // has it been destroyed
-
-  this.destroyed = false; // should we decode strings into buffers before passing to _write?
-  // this is here so that some node-core streams can optimize string
-  // handling at a lower level.
-
-  var noDecode = options.decodeStrings === false;
-  this.decodeStrings = !noDecode; // Crypto is kind of old and crusty.  Historically, its default string
-  // encoding is 'binary' so we have to make this configurable.
-  // Everything else in the universe uses 'utf8', though.
-
-  this.defaultEncoding = options.defaultEncoding || 'utf8'; // not an actual buffer we keep track of, but a measurement
-  // of how much we're waiting to get pushed to some underlying
-  // socket or file.
-
-  this.length = 0; // a flag to see when we're in the middle of a write.
-
-  this.writing = false; // when true all writes will be buffered until .uncork() call
-
-  this.corked = 0; // a flag to be able to tell if the onwrite cb is called immediately,
-  // or on a later tick.  We set this to true at first, because any
-  // actions that shouldn't happen until "later" should generally also
-  // not happen before the first write call.
-
-  this.sync = true; // a flag to know if we're processing previously buffered items, which
-  // may call the _write() callback in the same tick, so that we don't
-  // end up in an overlapped onwrite situation.
-
-  this.bufferProcessing = false; // the callback that's passed to _write(chunk,cb)
-
-  this.onwrite = function (er) {
-    onwrite(stream, er);
-  }; // the callback that the user supplies to write(chunk,encoding,cb)
-
-
-  this.writecb = null; // the amount that is being written when _write is called.
-
-  this.writelen = 0;
-  this.bufferedRequest = null;
-  this.lastBufferedRequest = null; // number of pending user-supplied write callbacks
-  // this must be 0 before 'finish' can be emitted
-
-  this.pendingcb = 0; // emit prefinish if the only thing we're waiting for is _write cbs
-  // This is relevant for synchronous Transform streams
-
-  this.prefinished = false; // True if the error was already emitted and should not be thrown again
-
-  this.errorEmitted = false; // Should close be emitted on destroy. Defaults to true.
-
-  this.emitClose = options.emitClose !== false; // Should .destroy() be called after 'finish' (and potentially 'end')
-
-  this.autoDestroy = !!options.autoDestroy; // count buffered requests
-
-  this.bufferedRequestCount = 0; // allocate the first CorkedRequest, there is always
-  // one allocated and free to use, and we maintain at most two
-
-  this.corkedRequestsFree = new CorkedRequest(this);
-}
-
-WritableState.prototype.getBuffer = function getBuffer() {
-  var current = this.bufferedRequest;
-  var out = [];
-
-  while (current) {
-    out.push(current);
-    current = current.next;
-  }
-
-  return out;
-};
-
-(function () {
-  try {
-    Object.defineProperty(WritableState.prototype, 'buffer', {
-      get: internalUtil.deprecate(function writableStateBufferGetter() {
-        return this.getBuffer();
-      }, '_writableState.buffer is deprecated. Use _writableState.getBuffer ' + 'instead.', 'DEP0003')
-    });
-  } catch (_) {}
-})(); // Test _writableState for inheritance to account for Duplex streams,
-// whose prototype chain only points to Readable.
-
-
-var realHasInstance;
-
-if (typeof Symbol === 'function' && Symbol.hasInstance && typeof Function.prototype[Symbol.hasInstance] === 'function') {
-  realHasInstance = Function.prototype[Symbol.hasInstance];
-  Object.defineProperty(Writable, Symbol.hasInstance, {
-    value: function value(object) {
-      if (realHasInstance.call(this, object)) return true;
-      if (this !== Writable) return false;
-      return object && object._writableState instanceof WritableState;
-    }
-  });
-} else {
-  realHasInstance = function realHasInstance(object) {
-    return object instanceof this;
-  };
-}
-
-function Writable(options) {
-  Duplex = Duplex || require('./_stream_duplex'); // Writable ctor is applied to Duplexes, too.
-  // `realHasInstance` is necessary because using plain `instanceof`
-  // would return false, as no `_writableState` property is attached.
-  // Trying to use the custom `instanceof` for Writable here will also break the
-  // Node.js LazyTransform implementation, which has a non-trivial getter for
-  // `_writableState` that would lead to infinite recursion.
-  // Checking for a Stream.Duplex instance is faster here instead of inside
-  // the WritableState constructor, at least with V8 6.5
-
-  var isDuplex = this instanceof Duplex;
-  if (!isDuplex && !realHasInstance.call(Writable, this)) return new Writable(options);
-  this._writableState = new WritableState(options, this, isDuplex); // legacy.
-
-  this.writable = true;
-
-  if (options) {
-    if (typeof options.write === 'function') this._write = options.write;
-    if (typeof options.writev === 'function') this._writev = options.writev;
-    if (typeof options.destroy === 'function') this._destroy = options.destroy;
-    if (typeof options.final === 'function') this._final = options.final;
-  }
-
-  Stream.call(this);
-} // Otherwise people can pipe Writable streams, which is just wrong.
-
-
-Writable.prototype.pipe = function () {
-  errorOrDestroy(this, new ERR_STREAM_CANNOT_PIPE());
-};
-
-function writeAfterEnd(stream, cb) {
-  var er = new ERR_STREAM_WRITE_AFTER_END(); // TODO: defer error events consistently everywhere, not just the cb
-
-  errorOrDestroy(stream, er);
-  process.nextTick(cb, er);
-} // Checks that a user-supplied chunk is valid, especially for the particular
-// mode the stream is in. Currently this means that `null` is never accepted
-// and undefined/non-string values are only allowed in object mode.
-
-
-function validChunk(stream, state, chunk, cb) {
-  var er;
-
-  if (chunk === null) {
-    er = new ERR_STREAM_NULL_VALUES();
-  } else if (typeof chunk !== 'string' && !state.objectMode) {
-    er = new ERR_INVALID_ARG_TYPE('chunk', ['string', 'Buffer'], chunk);
-  }
-
-  if (er) {
-    errorOrDestroy(stream, er);
-    process.nextTick(cb, er);
-    return false;
-  }
-
-  return true;
-}
-
-Writable.prototype.write = function (chunk, encoding, cb) {
-  var state = this._writableState;
-  var ret = false;
-
-  var isBuf = !state.objectMode && _isUint8Array(chunk);
-
-  if (isBuf && !Buffer.isBuffer(chunk)) {
-    chunk = _uint8ArrayToBuffer(chunk);
-  }
-
-  if (typeof encoding === 'function') {
-    cb = encoding;
-    encoding = null;
-  }
-
-  if (isBuf) encoding = 'buffer';else if (!encoding) encoding = state.defaultEncoding;
-  if (typeof cb !== 'function') cb = nop;
-  if (state.ending) writeAfterEnd(this, cb);else if (isBuf || validChunk(this, state, chunk, cb)) {
-    state.pendingcb++;
-    ret = writeOrBuffer(this, state, isBuf, chunk, encoding, cb);
-  }
-  return ret;
-};
-
-Writable.prototype.cork = function () {
-  this._writableState.corked++;
-};
-
-Writable.prototype.uncork = function () {
-  var state = this._writableState;
-
-  if (state.corked) {
-    state.corked--;
-    if (!state.writing && !state.corked && !state.bufferProcessing && state.bufferedRequest) clearBuffer(this, state);
-  }
-};
-
-Writable.prototype.setDefaultEncoding = function setDefaultEncoding(encoding) {
-  // node::ParseEncoding() requires lower case.
-  if (typeof encoding === 'string') encoding = encoding.toLowerCase();
-  if (!(['hex', 'utf8', 'utf-8', 'ascii', 'binary', 'base64', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le', 'raw'].indexOf((encoding + '').toLowerCase()) > -1)) throw new ERR_UNKNOWN_ENCODING(encoding);
-  this._writableState.defaultEncoding = encoding;
-  return this;
-};
-
-Object.defineProperty(Writable.prototype, 'writableBuffer', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._writableState && this._writableState.getBuffer();
-  }
-});
-
-function decodeChunk(state, chunk, encoding) {
-  if (!state.objectMode && state.decodeStrings !== false && typeof chunk === 'string') {
-    chunk = Buffer.from(chunk, encoding);
-  }
-
-  return chunk;
-}
-
-Object.defineProperty(Writable.prototype, 'writableHighWaterMark', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._writableState.highWaterMark;
-  }
-}); // if we're already writing something, then just put this
-// in the queue, and wait our turn.  Otherwise, call _write
-// If we return false, then we need a drain event, so set that flag.
-
-function writeOrBuffer(stream, state, isBuf, chunk, encoding, cb) {
-  if (!isBuf) {
-    var newChunk = decodeChunk(state, chunk, encoding);
-
-    if (chunk !== newChunk) {
-      isBuf = true;
-      encoding = 'buffer';
-      chunk = newChunk;
-    }
-  }
-
-  var len = state.objectMode ? 1 : chunk.length;
-  state.length += len;
-  var ret = state.length < state.highWaterMark; // we must ensure that previous needDrain will not be reset to false.
-
-  if (!ret) state.needDrain = true;
-
-  if (state.writing || state.corked) {
-    var last = state.lastBufferedRequest;
-    state.lastBufferedRequest = {
-      chunk: chunk,
-      encoding: encoding,
-      isBuf: isBuf,
-      callback: cb,
-      next: null
+        return el
     };
 
-    if (last) {
-      last.next = state.lastBufferedRequest;
-    } else {
-      state.bufferedRequest = state.lastBufferedRequest;
-    }
-
-    state.bufferedRequestCount += 1;
-  } else {
-    doWrite(stream, state, false, len, chunk, encoding, cb);
-  }
-
-  return ret;
-}
-
-function doWrite(stream, state, writev, len, chunk, encoding, cb) {
-  state.writelen = len;
-  state.writecb = cb;
-  state.writing = true;
-  state.sync = true;
-  if (state.destroyed) state.onwrite(new ERR_STREAM_DESTROYED('write'));else if (writev) stream._writev(chunk, state.onwrite);else stream._write(chunk, encoding, state.onwrite);
-  state.sync = false;
-}
-
-function onwriteError(stream, state, sync, er, cb) {
-  --state.pendingcb;
-
-  if (sync) {
-    // defer the callback if we are being called synchronously
-    // to avoid piling up things on the stack
-    process.nextTick(cb, er); // this can emit finish, and it will always happen
-    // after error
-
-    process.nextTick(finishMaybe, stream, state);
-    stream._writableState.errorEmitted = true;
-    errorOrDestroy(stream, er);
-  } else {
-    // the caller expect this to happen before if
-    // it is async
-    cb(er);
-    stream._writableState.errorEmitted = true;
-    errorOrDestroy(stream, er); // this can emit finish, but finish must
-    // always follow error
-
-    finishMaybe(stream, state);
-  }
-}
-
-function onwriteStateUpdate(state) {
-  state.writing = false;
-  state.writecb = null;
-  state.length -= state.writelen;
-  state.writelen = 0;
-}
-
-function onwrite(stream, er) {
-  var state = stream._writableState;
-  var sync = state.sync;
-  var cb = state.writecb;
-  if (typeof cb !== 'function') throw new ERR_MULTIPLE_CALLBACK();
-  onwriteStateUpdate(state);
-  if (er) onwriteError(stream, state, sync, er, cb);else {
-    // Check if we're actually ready to finish, but don't emit yet
-    var finished = needFinish(state) || stream.destroyed;
-
-    if (!finished && !state.corked && !state.bufferProcessing && state.bufferedRequest) {
-      clearBuffer(stream, state);
-    }
-
-    if (sync) {
-      process.nextTick(afterWrite, stream, state, finished, cb);
-    } else {
-      afterWrite(stream, state, finished, cb);
-    }
-  }
-}
-
-function afterWrite(stream, state, finished, cb) {
-  if (!finished) onwriteDrain(stream, state);
-  state.pendingcb--;
-  cb();
-  finishMaybe(stream, state);
-} // Must force callback to be called on nextTick, so that we don't
-// emit 'drain' before the write() consumer gets the 'false' return
-// value, and has a chance to attach a 'drain' listener.
-
-
-function onwriteDrain(stream, state) {
-  if (state.length === 0 && state.needDrain) {
-    state.needDrain = false;
-    stream.emit('drain');
-  }
-} // if there's something in the buffer waiting, then process it
-
-
-function clearBuffer(stream, state) {
-  state.bufferProcessing = true;
-  var entry = state.bufferedRequest;
-
-  if (stream._writev && entry && entry.next) {
-    // Fast case, write everything using _writev()
-    var l = state.bufferedRequestCount;
-    var buffer = new Array(l);
-    var holder = state.corkedRequestsFree;
-    holder.entry = entry;
-    var count = 0;
-    var allBuffers = true;
-
-    while (entry) {
-      buffer[count] = entry;
-      if (!entry.isBuf) allBuffers = false;
-      entry = entry.next;
-      count += 1;
-    }
-
-    buffer.allBuffers = allBuffers;
-    doWrite(stream, state, true, state.length, buffer, '', holder.finish); // doWrite is almost always async, defer these to save a bit of time
-    // as the hot path ends with doWrite
-
-    state.pendingcb++;
-    state.lastBufferedRequest = null;
-
-    if (holder.next) {
-      state.corkedRequestsFree = holder.next;
-      holder.next = null;
-    } else {
-      state.corkedRequestsFree = new CorkedRequest(state);
-    }
-
-    state.bufferedRequestCount = 0;
-  } else {
-    // Slow case, write chunks one-by-one
-    while (entry) {
-      var chunk = entry.chunk;
-      var encoding = entry.encoding;
-      var cb = entry.callback;
-      var len = state.objectMode ? 1 : chunk.length;
-      doWrite(stream, state, false, len, chunk, encoding, cb);
-      entry = entry.next;
-      state.bufferedRequestCount--; // if we didn't call the onwrite immediately, then
-      // it means that we need to wait until it does.
-      // also, that means that the chunk and cb are currently
-      // being processed, so move the buffer counter past them.
-
-      if (state.writing) {
-        break;
-      }
-    }
-
-    if (entry === null) state.lastBufferedRequest = null;
-  }
-
-  state.bufferedRequest = entry;
-  state.bufferProcessing = false;
-}
-
-Writable.prototype._write = function (chunk, encoding, cb) {
-  cb(new ERR_METHOD_NOT_IMPLEMENTED('_write()'));
-};
-
-Writable.prototype._writev = null;
-
-Writable.prototype.end = function (chunk, encoding, cb) {
-  var state = this._writableState;
-
-  if (typeof chunk === 'function') {
-    cb = chunk;
-    chunk = null;
-    encoding = null;
-  } else if (typeof encoding === 'function') {
-    cb = encoding;
-    encoding = null;
-  }
-
-  if (chunk !== null && chunk !== undefined) this.write(chunk, encoding); // .end() fully uncorks
-
-  if (state.corked) {
-    state.corked = 1;
-    this.uncork();
-  } // ignore unnecessary end() calls.
-
-
-  if (!state.ending) endWritable(this, state, cb);
-  return this;
-};
-
-Object.defineProperty(Writable.prototype, 'writableLength', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    return this._writableState.length;
-  }
-});
-
-function needFinish(state) {
-  return state.ending && state.length === 0 && state.bufferedRequest === null && !state.finished && !state.writing;
-}
-
-function callFinal(stream, state) {
-  stream._final(function (err) {
-    state.pendingcb--;
-
-    if (err) {
-      errorOrDestroy(stream, err);
-    }
-
-    state.prefinished = true;
-    stream.emit('prefinish');
-    finishMaybe(stream, state);
-  });
-}
-
-function prefinish(stream, state) {
-  if (!state.prefinished && !state.finalCalled) {
-    if (typeof stream._final === 'function' && !state.destroyed) {
-      state.pendingcb++;
-      state.finalCalled = true;
-      process.nextTick(callFinal, stream, state);
-    } else {
-      state.prefinished = true;
-      stream.emit('prefinish');
-    }
-  }
-}
-
-function finishMaybe(stream, state) {
-  var need = needFinish(state);
-
-  if (need) {
-    prefinish(stream, state);
-
-    if (state.pendingcb === 0) {
-      state.finished = true;
-      stream.emit('finish');
-
-      if (state.autoDestroy) {
-        // In case of duplex streams we need a way to detect
-        // if the readable side is ready for autoDestroy as well
-        var rState = stream._readableState;
-
-        if (!rState || rState.autoDestroy && rState.endEmitted) {
-          stream.destroy();
+    // Helper function gets a property from the properties object, with a default fallback
+    var getOption = function (options, propName, def) {
+        var value = options[propName];
+        if (value !== undefined) {
+            return value
         }
-      }
-    }
-  }
+        return def
+    };
 
-  return need;
-}
+    var getGutterSize = function (gutterSize, isFirst, isLast, gutterAlign) {
+        if (isFirst) {
+            if (gutterAlign === 'end') {
+                return 0
+            }
+            if (gutterAlign === 'center') {
+                return gutterSize / 2
+            }
+        } else if (isLast) {
+            if (gutterAlign === 'start') {
+                return 0
+            }
+            if (gutterAlign === 'center') {
+                return gutterSize / 2
+            }
+        }
 
-function endWritable(stream, state, cb) {
-  state.ending = true;
-  finishMaybe(stream, state);
+        return gutterSize
+    };
 
-  if (cb) {
-    if (state.finished) process.nextTick(cb);else stream.once('finish', cb);
-  }
+    // Default options
+    var defaultGutterFn = function (i, gutterDirection) {
+        var gut = document.createElement('div');
+        gut.className = "gutter gutter-" + gutterDirection;
+        return gut
+    };
 
-  state.ended = true;
-  stream.writable = false;
-}
+    var defaultElementStyleFn = function (dim, size, gutSize) {
+        var style = {};
 
-function onCorkedFinish(corkReq, state, err) {
-  var entry = corkReq.entry;
-  corkReq.entry = null;
+        if (!isString(size)) {
+            style[dim] = calc + "(" + size + "% - " + gutSize + "px)";
+        } else {
+            style[dim] = size;
+        }
 
-  while (entry) {
-    var cb = entry.callback;
-    state.pendingcb--;
-    cb(err);
-    entry = entry.next;
-  } // reuse the free corkReq.
+        return style
+    };
 
+    var defaultGutterStyleFn = function (dim, gutSize) {
+        var obj;
 
-  state.corkedRequestsFree.next = corkReq;
-}
+        return (( obj = {}, obj[dim] = (gutSize + "px"), obj ));
+    };
 
-Object.defineProperty(Writable.prototype, 'destroyed', {
-  // making it explicit this property is not enumerable
-  // because otherwise some prototype manipulation in
-  // userland will fail
-  enumerable: false,
-  get: function get() {
-    if (this._writableState === undefined) {
-      return false;
-    }
+    // The main function to initialize a split. Split.js thinks about each pair
+    // of elements as an independant pair. Dragging the gutter between two elements
+    // only changes the dimensions of elements in that pair. This is key to understanding
+    // how the following functions operate, since each function is bound to a pair.
+    //
+    // A pair object is shaped like this:
+    //
+    // {
+    //     a: DOM element,
+    //     b: DOM element,
+    //     aMin: Number,
+    //     bMin: Number,
+    //     dragging: Boolean,
+    //     parent: DOM element,
+    //     direction: 'horizontal' | 'vertical'
+    // }
+    //
+    // The basic sequence:
+    //
+    // 1. Set defaults to something sane. `options` doesn't have to be passed at all.
+    // 2. Initialize a bunch of strings based on the direction we're splitting.
+    //    A lot of the behavior in the rest of the library is paramatized down to
+    //    rely on CSS strings and classes.
+    // 3. Define the dragging helper functions, and a few helpers to go with them.
+    // 4. Loop through the elements while pairing them off. Every pair gets an
+    //    `pair` object and a gutter.
+    // 5. Actually size the pair elements, insert gutters and attach event listeners.
+    var Split = function (idsOption, options) {
+        if ( options === void 0 ) options = {};
 
-    return this._writableState.destroyed;
-  },
-  set: function set(value) {
-    // we ignore the value if the stream
-    // has not been initialized yet
-    if (!this._writableState) {
-      return;
-    } // backward compatibility, the user is explicitly
-    // managing destroyed
+        if (ssr) { return {} }
 
+        var ids = idsOption;
+        var dimension;
+        var clientAxis;
+        var position;
+        var positionEnd;
+        var clientSize;
+        var elements;
 
-    this._writableState.destroyed = value;
-  }
-});
-Writable.prototype.destroy = destroyImpl.destroy;
-Writable.prototype._undestroy = destroyImpl.undestroy;
+        // Allow HTMLCollection to be used as an argument when supported
+        if (Array.from) {
+            ids = Array.from(ids);
+        }
 
-Writable.prototype._destroy = function (err, cb) {
-  cb(err);
-};
-}).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../errors":520,"./_stream_duplex":521,"./internal/streams/destroy":528,"./internal/streams/state":532,"./internal/streams/stream":533,"_process":507,"buffer":415,"inherits":519,"util-deprecate":549}],526:[function(require,module,exports){
-(function (process){(function (){
-'use strict';
+        // All DOM elements in the split should have a common parent. We can grab
+        // the first elements parent and hope users read the docs because the
+        // behavior will be whacky otherwise.
+        var firstElement = elementOrSelector(ids[0]);
+        var parent = firstElement.parentNode;
+        var parentStyle = getComputedStyle ? getComputedStyle(parent) : null;
+        var parentFlexDirection = parentStyle ? parentStyle.flexDirection : null;
 
-var _Object$setPrototypeO;
+        // Set default options.sizes to equal percentages of the parent element.
+        var sizes = getOption(options, 'sizes') || ids.map(function () { return 100 / ids.length; });
 
-function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+        // Standardize minSize and maxSize to an array if it isn't already.
+        // This allows minSize and maxSize to be passed as a number.
+        var minSize = getOption(options, 'minSize', 100);
+        var minSizes = Array.isArray(minSize) ? minSize : ids.map(function () { return minSize; });
+        var maxSize = getOption(options, 'maxSize', Infinity);
+        var maxSizes = Array.isArray(maxSize) ? maxSize : ids.map(function () { return maxSize; });
 
-var finished = require('./end-of-stream');
+        // Get other options
+        var expandToMin = getOption(options, 'expandToMin', false);
+        var gutterSize = getOption(options, 'gutterSize', 10);
+        var gutterAlign = getOption(options, 'gutterAlign', 'center');
+        var snapOffset = getOption(options, 'snapOffset', 30);
+        var dragInterval = getOption(options, 'dragInterval', 1);
+        var direction = getOption(options, 'direction', HORIZONTAL);
+        var cursor = getOption(
+            options,
+            'cursor',
+            direction === HORIZONTAL ? 'col-resize' : 'row-resize'
+        );
+        var gutter = getOption(options, 'gutter', defaultGutterFn);
+        var elementStyle = getOption(
+            options,
+            'elementStyle',
+            defaultElementStyleFn
+        );
+        var gutterStyle = getOption(options, 'gutterStyle', defaultGutterStyleFn);
 
-var kLastResolve = Symbol('lastResolve');
-var kLastReject = Symbol('lastReject');
-var kError = Symbol('error');
-var kEnded = Symbol('ended');
-var kLastPromise = Symbol('lastPromise');
-var kHandlePromise = Symbol('handlePromise');
-var kStream = Symbol('stream');
+        // 2. Initialize a bunch of strings based on the direction we're splitting.
+        // A lot of the behavior in the rest of the library is paramatized down to
+        // rely on CSS strings and classes.
+        if (direction === HORIZONTAL) {
+            dimension = 'width';
+            clientAxis = 'clientX';
+            position = 'left';
+            positionEnd = 'right';
+            clientSize = 'clientWidth';
+        } else if (direction === 'vertical') {
+            dimension = 'height';
+            clientAxis = 'clientY';
+            position = 'top';
+            positionEnd = 'bottom';
+            clientSize = 'clientHeight';
+        }
 
-function createIterResult(value, done) {
-  return {
-    value: value,
-    done: done
-  };
-}
+        // 3. Define the dragging helper functions, and a few helpers to go with them.
+        // Each helper is bound to a pair object that contains its metadata. This
+        // also makes it easy to store references to listeners that that will be
+        // added and removed.
+        //
+        // Even though there are no other functions contained in them, aliasing
+        // this to self saves 50 bytes or so since it's used so frequently.
+        //
+        // The pair object saves metadata like dragging state, position and
+        // event listener references.
 
-function readAndResolve(iter) {
-  var resolve = iter[kLastResolve];
+        function setElementSize(el, size, gutSize, i) {
+            // Split.js allows setting sizes via numbers (ideally), or if you must,
+            // by string, like '300px'. This is less than ideal, because it breaks
+            // the fluid layout that `calc(% - px)` provides. You're on your own if you do that,
+            // make sure you calculate the gutter size by hand.
+            var style = elementStyle(dimension, size, gutSize, i);
 
-  if (resolve !== null) {
-    var data = iter[kStream].read(); // we defer if data is null
-    // we can be expecting either 'end' or
-    // 'error'
+            Object.keys(style).forEach(function (prop) {
+                // eslint-disable-next-line no-param-reassign
+                el.style[prop] = style[prop];
+            });
+        }
 
-    if (data !== null) {
-      iter[kLastPromise] = null;
-      iter[kLastResolve] = null;
-      iter[kLastReject] = null;
-      resolve(createIterResult(data, false));
-    }
-  }
-}
+        function setGutterSize(gutterElement, gutSize, i) {
+            var style = gutterStyle(dimension, gutSize, i);
 
-function onReadable(iter) {
-  // we wait for the next tick, because it might
-  // emit an error with process.nextTick
-  process.nextTick(readAndResolve, iter);
-}
+            Object.keys(style).forEach(function (prop) {
+                // eslint-disable-next-line no-param-reassign
+                gutterElement.style[prop] = style[prop];
+            });
+        }
 
-function wrapForNext(lastPromise, iter) {
-  return function (resolve, reject) {
-    lastPromise.then(function () {
-      if (iter[kEnded]) {
-        resolve(createIterResult(undefined, true));
-        return;
-      }
+        function getSizes() {
+            return elements.map(function (element) { return element.size; })
+        }
 
-      iter[kHandlePromise](resolve, reject);
-    }, reject);
-  };
-}
+        // Supports touch events, but not multitouch, so only the first
+        // finger `touches[0]` is counted.
+        function getMousePosition(e) {
+            if ('touches' in e) { return e.touches[0][clientAxis] }
+            return e[clientAxis]
+        }
 
-var AsyncIteratorPrototype = Object.getPrototypeOf(function () {});
-var ReadableStreamAsyncIteratorPrototype = Object.setPrototypeOf((_Object$setPrototypeO = {
-  get stream() {
-    return this[kStream];
-  },
+        // Actually adjust the size of elements `a` and `b` to `offset` while dragging.
+        // calc is used to allow calc(percentage + gutterpx) on the whole split instance,
+        // which allows the viewport to be resized without additional logic.
+        // Element a's size is the same as offset. b's size is total size - a size.
+        // Both sizes are calculated from the initial parent percentage,
+        // then the gutter size is subtracted.
+        function adjust(offset) {
+            var a = elements[this.a];
+            var b = elements[this.b];
+            var percentage = a.size + b.size;
 
-  next: function next() {
-    var _this = this;
+            a.size = (offset / this.size) * percentage;
+            b.size = percentage - (offset / this.size) * percentage;
 
-    // if we have detected an error in the meanwhile
-    // reject straight away
-    var error = this[kError];
+            setElementSize(a.element, a.size, this[aGutterSize], a.i);
+            setElementSize(b.element, b.size, this[bGutterSize], b.i);
+        }
 
-    if (error !== null) {
-      return Promise.reject(error);
-    }
+        // drag, where all the magic happens. The logic is really quite simple:
+        //
+        // 1. Ignore if the pair is not dragging.
+        // 2. Get the offset of the event.
+        // 3. Snap offset to min if within snappable range (within min + snapOffset).
+        // 4. Actually adjust each element in the pair to offset.
+        //
+        // ---------------------------------------------------------------------
+        // |    | <- a.minSize               ||              b.minSize -> |    |
+        // |    |  | <- this.snapOffset      ||     this.snapOffset -> |  |    |
+        // |    |  |                         ||                        |  |    |
+        // |    |  |                         ||                        |  |    |
+        // ---------------------------------------------------------------------
+        // | <- this.start                                        this.size -> |
+        function drag(e) {
+            var offset;
+            var a = elements[this.a];
+            var b = elements[this.b];
 
-    if (this[kEnded]) {
-      return Promise.resolve(createIterResult(undefined, true));
-    }
+            if (!this.dragging) { return }
 
-    if (this[kStream].destroyed) {
-      // We need to defer via nextTick because if .destroy(err) is
-      // called, the error will be emitted via nextTick, and
-      // we cannot guarantee that there is no error lingering around
-      // waiting to be emitted.
-      return new Promise(function (resolve, reject) {
-        process.nextTick(function () {
-          if (_this[kError]) {
-            reject(_this[kError]);
-          } else {
-            resolve(createIterResult(undefined, true));
-          }
+            // Get the offset of the event from the first side of the
+            // pair `this.start`. Then offset by the initial position of the
+            // mouse compared to the gutter size.
+            offset =
+                getMousePosition(e) -
+                this.start +
+                (this[aGutterSize] - this.dragOffset);
+
+            if (dragInterval > 1) {
+                offset = Math.round(offset / dragInterval) * dragInterval;
+            }
+
+            // If within snapOffset of min or max, set offset to min or max.
+            // snapOffset buffers a.minSize and b.minSize, so logic is opposite for both.
+            // Include the appropriate gutter sizes to prevent overflows.
+            if (offset <= a.minSize + snapOffset + this[aGutterSize]) {
+                offset = a.minSize + this[aGutterSize];
+            } else if (
+                offset >=
+                this.size - (b.minSize + snapOffset + this[bGutterSize])
+            ) {
+                offset = this.size - (b.minSize + this[bGutterSize]);
+            }
+
+            if (offset >= a.maxSize - snapOffset + this[aGutterSize]) {
+                offset = a.maxSize + this[aGutterSize];
+            } else if (
+                offset <=
+                this.size - (b.maxSize - snapOffset + this[bGutterSize])
+            ) {
+                offset = this.size - (b.maxSize + this[bGutterSize]);
+            }
+
+            // Actually adjust the size.
+            adjust.call(this, offset);
+
+            // Call the drag callback continously. Don't do anything too intensive
+            // in this callback.
+            getOption(options, 'onDrag', NOOP)(getSizes());
+        }
+
+        // Cache some important sizes when drag starts, so we don't have to do that
+        // continously:
+        //
+        // `size`: The total size of the pair. First + second + first gutter + second gutter.
+        // `start`: The leading side of the first element.
+        //
+        // ------------------------------------------------
+        // |      aGutterSize -> |||                      |
+        // |                     |||                      |
+        // |                     |||                      |
+        // |                     ||| <- bGutterSize       |
+        // ------------------------------------------------
+        // | <- start                             size -> |
+        function calculateSizes() {
+            // Figure out the parent size minus padding.
+            var a = elements[this.a].element;
+            var b = elements[this.b].element;
+
+            var aBounds = a[getBoundingClientRect]();
+            var bBounds = b[getBoundingClientRect]();
+
+            this.size =
+                aBounds[dimension] +
+                bBounds[dimension] +
+                this[aGutterSize] +
+                this[bGutterSize];
+            this.start = aBounds[position];
+            this.end = aBounds[positionEnd];
+        }
+
+        function innerSize(element) {
+            // Return nothing if getComputedStyle is not supported (< IE9)
+            // Or if parent element has no layout yet
+            if (!getComputedStyle) { return null }
+
+            var computedStyle = getComputedStyle(element);
+
+            if (!computedStyle) { return null }
+
+            var size = element[clientSize];
+
+            if (size === 0) { return null }
+
+            if (direction === HORIZONTAL) {
+                size -=
+                    parseFloat(computedStyle.paddingLeft) +
+                    parseFloat(computedStyle.paddingRight);
+            } else {
+                size -=
+                    parseFloat(computedStyle.paddingTop) +
+                    parseFloat(computedStyle.paddingBottom);
+            }
+
+            return size
+        }
+
+        // When specifying percentage sizes that are less than the computed
+        // size of the element minus the gutter, the lesser percentages must be increased
+        // (and decreased from the other elements) to make space for the pixels
+        // subtracted by the gutters.
+        function trimToMin(sizesToTrim) {
+            // Try to get inner size of parent element.
+            // If it's no supported, return original sizes.
+            var parentSize = innerSize(parent);
+            if (parentSize === null) {
+                return sizesToTrim
+            }
+
+            if (minSizes.reduce(function (a, b) { return a + b; }, 0) > parentSize) {
+                return sizesToTrim
+            }
+
+            // Keep track of the excess pixels, the amount of pixels over the desired percentage
+            // Also keep track of the elements with pixels to spare, to decrease after if needed
+            var excessPixels = 0;
+            var toSpare = [];
+
+            var pixelSizes = sizesToTrim.map(function (size, i) {
+                // Convert requested percentages to pixel sizes
+                var pixelSize = (parentSize * size) / 100;
+                var elementGutterSize = getGutterSize(
+                    gutterSize,
+                    i === 0,
+                    i === sizesToTrim.length - 1,
+                    gutterAlign
+                );
+                var elementMinSize = minSizes[i] + elementGutterSize;
+
+                // If element is too smal, increase excess pixels by the difference
+                // and mark that it has no pixels to spare
+                if (pixelSize < elementMinSize) {
+                    excessPixels += elementMinSize - pixelSize;
+                    toSpare.push(0);
+                    return elementMinSize
+                }
+
+                // Otherwise, mark the pixels it has to spare and return it's original size
+                toSpare.push(pixelSize - elementMinSize);
+                return pixelSize
+            });
+
+            // If nothing was adjusted, return the original sizes
+            if (excessPixels === 0) {
+                return sizesToTrim
+            }
+
+            return pixelSizes.map(function (pixelSize, i) {
+                var newPixelSize = pixelSize;
+
+                // While there's still pixels to take, and there's enough pixels to spare,
+                // take as many as possible up to the total excess pixels
+                if (excessPixels > 0 && toSpare[i] - excessPixels > 0) {
+                    var takenPixels = Math.min(
+                        excessPixels,
+                        toSpare[i] - excessPixels
+                    );
+
+                    // Subtract the amount taken for the next iteration
+                    excessPixels -= takenPixels;
+                    newPixelSize = pixelSize - takenPixels;
+                }
+
+                // Return the pixel size adjusted as a percentage
+                return (newPixelSize / parentSize) * 100
+            })
+        }
+
+        // stopDragging is very similar to startDragging in reverse.
+        function stopDragging() {
+            var self = this;
+            var a = elements[self.a].element;
+            var b = elements[self.b].element;
+
+            if (self.dragging) {
+                getOption(options, 'onDragEnd', NOOP)(getSizes());
+            }
+
+            self.dragging = false;
+
+            // Remove the stored event listeners. This is why we store them.
+            global[removeEventListener]('mouseup', self.stop);
+            global[removeEventListener]('touchend', self.stop);
+            global[removeEventListener]('touchcancel', self.stop);
+            global[removeEventListener]('mousemove', self.move);
+            global[removeEventListener]('touchmove', self.move);
+
+            // Clear bound function references
+            self.stop = null;
+            self.move = null;
+
+            a[removeEventListener]('selectstart', NOOP);
+            a[removeEventListener]('dragstart', NOOP);
+            b[removeEventListener]('selectstart', NOOP);
+            b[removeEventListener]('dragstart', NOOP);
+
+            a.style.userSelect = '';
+            a.style.webkitUserSelect = '';
+            a.style.MozUserSelect = '';
+            a.style.pointerEvents = '';
+
+            b.style.userSelect = '';
+            b.style.webkitUserSelect = '';
+            b.style.MozUserSelect = '';
+            b.style.pointerEvents = '';
+
+            self.gutter.style.cursor = '';
+            self.parent.style.cursor = '';
+            document.body.style.cursor = '';
+        }
+
+        // startDragging calls `calculateSizes` to store the inital size in the pair object.
+        // It also adds event listeners for mouse/touch events,
+        // and prevents selection while dragging so avoid the selecting text.
+        function startDragging(e) {
+            // Right-clicking can't start dragging.
+            if ('button' in e && e.button !== 0) {
+                return
+            }
+
+            // Alias frequently used variables to save space. 200 bytes.
+            var self = this;
+            var a = elements[self.a].element;
+            var b = elements[self.b].element;
+
+            // Call the onDragStart callback.
+            if (!self.dragging) {
+                getOption(options, 'onDragStart', NOOP)(getSizes());
+            }
+
+            // Don't actually drag the element. We emulate that in the drag function.
+            e.preventDefault();
+
+            // Set the dragging property of the pair object.
+            self.dragging = true;
+
+            // Create two event listeners bound to the same pair object and store
+            // them in the pair object.
+            self.move = drag.bind(self);
+            self.stop = stopDragging.bind(self);
+
+            // All the binding. `window` gets the stop events in case we drag out of the elements.
+            global[addEventListener]('mouseup', self.stop);
+            global[addEventListener]('touchend', self.stop);
+            global[addEventListener]('touchcancel', self.stop);
+            global[addEventListener]('mousemove', self.move);
+            global[addEventListener]('touchmove', self.move);
+
+            // Disable selection. Disable!
+            a[addEventListener]('selectstart', NOOP);
+            a[addEventListener]('dragstart', NOOP);
+            b[addEventListener]('selectstart', NOOP);
+            b[addEventListener]('dragstart', NOOP);
+
+            a.style.userSelect = 'none';
+            a.style.webkitUserSelect = 'none';
+            a.style.MozUserSelect = 'none';
+            a.style.pointerEvents = 'none';
+
+            b.style.userSelect = 'none';
+            b.style.webkitUserSelect = 'none';
+            b.style.MozUserSelect = 'none';
+            b.style.pointerEvents = 'none';
+
+            // Set the cursor at multiple levels
+            self.gutter.style.cursor = cursor;
+            self.parent.style.cursor = cursor;
+            document.body.style.cursor = cursor;
+
+            // Cache the initial sizes of the pair.
+            calculateSizes.call(self);
+
+            // Determine the position of the mouse compared to the gutter
+            self.dragOffset = getMousePosition(e) - self.end;
+        }
+
+        // adjust sizes to ensure percentage is within min size and gutter.
+        sizes = trimToMin(sizes);
+
+        // 5. Create pair and element objects. Each pair has an index reference to
+        // elements `a` and `b` of the pair (first and second elements).
+        // Loop through the elements while pairing them off. Every pair gets a
+        // `pair` object and a gutter.
+        //
+        // Basic logic:
+        //
+        // - Starting with the second element `i > 0`, create `pair` objects with
+        //   `a = i - 1` and `b = i`
+        // - Set gutter sizes based on the _pair_ being first/last. The first and last
+        //   pair have gutterSize / 2, since they only have one half gutter, and not two.
+        // - Create gutter elements and add event listeners.
+        // - Set the size of the elements, minus the gutter sizes.
+        //
+        // -----------------------------------------------------------------------
+        // |     i=0     |         i=1         |        i=2       |      i=3     |
+        // |             |                     |                  |              |
+        // |           pair 0                pair 1             pair 2           |
+        // |             |                     |                  |              |
+        // -----------------------------------------------------------------------
+        var pairs = [];
+        elements = ids.map(function (id, i) {
+            // Create the element object.
+            var element = {
+                element: elementOrSelector(id),
+                size: sizes[i],
+                minSize: minSizes[i],
+                maxSize: maxSizes[i],
+                i: i,
+            };
+
+            var pair;
+
+            if (i > 0) {
+                // Create the pair object with its metadata.
+                pair = {
+                    a: i - 1,
+                    b: i,
+                    dragging: false,
+                    direction: direction,
+                    parent: parent,
+                };
+
+                pair[aGutterSize] = getGutterSize(
+                    gutterSize,
+                    i - 1 === 0,
+                    false,
+                    gutterAlign
+                );
+                pair[bGutterSize] = getGutterSize(
+                    gutterSize,
+                    false,
+                    i === ids.length - 1,
+                    gutterAlign
+                );
+
+                // if the parent has a reverse flex-direction, switch the pair elements.
+                if (
+                    parentFlexDirection === 'row-reverse' ||
+                    parentFlexDirection === 'column-reverse'
+                ) {
+                    var temp = pair.a;
+                    pair.a = pair.b;
+                    pair.b = temp;
+                }
+            }
+
+            // Determine the size of the current element. IE8 is supported by
+            // staticly assigning sizes without draggable gutters. Assigns a string
+            // to `size`.
+            //
+            // Create gutter elements for each pair.
+            if (i > 0) {
+                var gutterElement = gutter(i, direction, element.element);
+                setGutterSize(gutterElement, gutterSize, i);
+
+                // Save bound event listener for removal later
+                pair[gutterStartDragging] = startDragging.bind(pair);
+
+                // Attach bound event listener
+                gutterElement[addEventListener](
+                    'mousedown',
+                    pair[gutterStartDragging]
+                );
+                gutterElement[addEventListener](
+                    'touchstart',
+                    pair[gutterStartDragging]
+                );
+
+                parent.insertBefore(gutterElement, element.element);
+
+                pair.gutter = gutterElement;
+            }
+
+            setElementSize(
+                element.element,
+                element.size,
+                getGutterSize(
+                    gutterSize,
+                    i === 0,
+                    i === ids.length - 1,
+                    gutterAlign
+                ),
+                i
+            );
+
+            // After the first iteration, and we have a pair object, append it to the
+            // list of pairs.
+            if (i > 0) {
+                pairs.push(pair);
+            }
+
+            return element
         });
-      });
-    } // if we have multiple next() calls
-    // we will wait for the previous Promise to finish
-    // this logic is optimized to support for await loops,
-    // where next() is only called once at a time
 
+        function adjustToMin(element) {
+            var isLast = element.i === pairs.length;
+            var pair = isLast ? pairs[element.i - 1] : pairs[element.i];
 
-    var lastPromise = this[kLastPromise];
-    var promise;
+            calculateSizes.call(pair);
 
-    if (lastPromise) {
-      promise = new Promise(wrapForNext(lastPromise, this));
-    } else {
-      // fast path needed to support multiple this.push()
-      // without triggering the next() queue
-      var data = this[kStream].read();
+            var size = isLast
+                ? pair.size - element.minSize - pair[bGutterSize]
+                : element.minSize + pair[aGutterSize];
 
-      if (data !== null) {
-        return Promise.resolve(createIterResult(data, false));
-      }
-
-      promise = new Promise(this[kHandlePromise]);
-    }
-
-    this[kLastPromise] = promise;
-    return promise;
-  }
-}, _defineProperty(_Object$setPrototypeO, Symbol.asyncIterator, function () {
-  return this;
-}), _defineProperty(_Object$setPrototypeO, "return", function _return() {
-  var _this2 = this;
-
-  // destroy(err, cb) is a private API
-  // we can guarantee we have that here, because we control the
-  // Readable class this is attached to
-  return new Promise(function (resolve, reject) {
-    _this2[kStream].destroy(null, function (err) {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve(createIterResult(undefined, true));
-    });
-  });
-}), _Object$setPrototypeO), AsyncIteratorPrototype);
-
-var createReadableStreamAsyncIterator = function createReadableStreamAsyncIterator(stream) {
-  var _Object$create;
-
-  var iterator = Object.create(ReadableStreamAsyncIteratorPrototype, (_Object$create = {}, _defineProperty(_Object$create, kStream, {
-    value: stream,
-    writable: true
-  }), _defineProperty(_Object$create, kLastResolve, {
-    value: null,
-    writable: true
-  }), _defineProperty(_Object$create, kLastReject, {
-    value: null,
-    writable: true
-  }), _defineProperty(_Object$create, kError, {
-    value: null,
-    writable: true
-  }), _defineProperty(_Object$create, kEnded, {
-    value: stream._readableState.endEmitted,
-    writable: true
-  }), _defineProperty(_Object$create, kHandlePromise, {
-    value: function value(resolve, reject) {
-      var data = iterator[kStream].read();
-
-      if (data) {
-        iterator[kLastPromise] = null;
-        iterator[kLastResolve] = null;
-        iterator[kLastReject] = null;
-        resolve(createIterResult(data, false));
-      } else {
-        iterator[kLastResolve] = resolve;
-        iterator[kLastReject] = reject;
-      }
-    },
-    writable: true
-  }), _Object$create));
-  iterator[kLastPromise] = null;
-  finished(stream, function (err) {
-    if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
-      var reject = iterator[kLastReject]; // reject if we are waiting for data in the Promise
-      // returned by next() and store the error
-
-      if (reject !== null) {
-        iterator[kLastPromise] = null;
-        iterator[kLastResolve] = null;
-        iterator[kLastReject] = null;
-        reject(err);
-      }
-
-      iterator[kError] = err;
-      return;
-    }
-
-    var resolve = iterator[kLastResolve];
-
-    if (resolve !== null) {
-      iterator[kLastPromise] = null;
-      iterator[kLastResolve] = null;
-      iterator[kLastReject] = null;
-      resolve(createIterResult(undefined, true));
-    }
-
-    iterator[kEnded] = true;
-  });
-  stream.on('readable', onReadable.bind(null, iterator));
-  return iterator;
-};
-
-module.exports = createReadableStreamAsyncIterator;
-}).call(this)}).call(this,require('_process'))
-},{"./end-of-stream":529,"_process":507}],527:[function(require,module,exports){
-'use strict';
-
-function ownKeys(object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); if (enumerableOnly) symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; }); keys.push.apply(keys, symbols); } return keys; }
-
-function _objectSpread(target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i] != null ? arguments[i] : {}; if (i % 2) { ownKeys(Object(source), true).forEach(function (key) { _defineProperty(target, key, source[key]); }); } else if (Object.getOwnPropertyDescriptors) { Object.defineProperties(target, Object.getOwnPropertyDescriptors(source)); } else { ownKeys(Object(source)).forEach(function (key) { Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source, key)); }); } } return target; }
-
-function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
-
-function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
-
-function _defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } }
-
-function _createClass(Constructor, protoProps, staticProps) { if (protoProps) _defineProperties(Constructor.prototype, protoProps); if (staticProps) _defineProperties(Constructor, staticProps); return Constructor; }
-
-var _require = require('buffer'),
-    Buffer = _require.Buffer;
-
-var _require2 = require('util'),
-    inspect = _require2.inspect;
-
-var custom = inspect && inspect.custom || 'inspect';
-
-function copyBuffer(src, target, offset) {
-  Buffer.prototype.copy.call(src, target, offset);
-}
-
-module.exports =
-/*#__PURE__*/
-function () {
-  function BufferList() {
-    _classCallCheck(this, BufferList);
-
-    this.head = null;
-    this.tail = null;
-    this.length = 0;
-  }
-
-  _createClass(BufferList, [{
-    key: "push",
-    value: function push(v) {
-      var entry = {
-        data: v,
-        next: null
-      };
-      if (this.length > 0) this.tail.next = entry;else this.head = entry;
-      this.tail = entry;
-      ++this.length;
-    }
-  }, {
-    key: "unshift",
-    value: function unshift(v) {
-      var entry = {
-        data: v,
-        next: this.head
-      };
-      if (this.length === 0) this.tail = entry;
-      this.head = entry;
-      ++this.length;
-    }
-  }, {
-    key: "shift",
-    value: function shift() {
-      if (this.length === 0) return;
-      var ret = this.head.data;
-      if (this.length === 1) this.head = this.tail = null;else this.head = this.head.next;
-      --this.length;
-      return ret;
-    }
-  }, {
-    key: "clear",
-    value: function clear() {
-      this.head = this.tail = null;
-      this.length = 0;
-    }
-  }, {
-    key: "join",
-    value: function join(s) {
-      if (this.length === 0) return '';
-      var p = this.head;
-      var ret = '' + p.data;
-
-      while (p = p.next) {
-        ret += s + p.data;
-      }
-
-      return ret;
-    }
-  }, {
-    key: "concat",
-    value: function concat(n) {
-      if (this.length === 0) return Buffer.alloc(0);
-      var ret = Buffer.allocUnsafe(n >>> 0);
-      var p = this.head;
-      var i = 0;
-
-      while (p) {
-        copyBuffer(p.data, ret, i);
-        i += p.data.length;
-        p = p.next;
-      }
-
-      return ret;
-    } // Consumes a specified amount of bytes or characters from the buffered data.
-
-  }, {
-    key: "consume",
-    value: function consume(n, hasStrings) {
-      var ret;
-
-      if (n < this.head.data.length) {
-        // `slice` is the same for buffers and strings.
-        ret = this.head.data.slice(0, n);
-        this.head.data = this.head.data.slice(n);
-      } else if (n === this.head.data.length) {
-        // First chunk is a perfect match.
-        ret = this.shift();
-      } else {
-        // Result spans more than one buffer.
-        ret = hasStrings ? this._getString(n) : this._getBuffer(n);
-      }
-
-      return ret;
-    }
-  }, {
-    key: "first",
-    value: function first() {
-      return this.head.data;
-    } // Consumes a specified amount of characters from the buffered data.
-
-  }, {
-    key: "_getString",
-    value: function _getString(n) {
-      var p = this.head;
-      var c = 1;
-      var ret = p.data;
-      n -= ret.length;
-
-      while (p = p.next) {
-        var str = p.data;
-        var nb = n > str.length ? str.length : n;
-        if (nb === str.length) ret += str;else ret += str.slice(0, n);
-        n -= nb;
-
-        if (n === 0) {
-          if (nb === str.length) {
-            ++c;
-            if (p.next) this.head = p.next;else this.head = this.tail = null;
-          } else {
-            this.head = p;
-            p.data = str.slice(nb);
-          }
-
-          break;
+            adjust.call(pair, size);
         }
 
-        ++c;
-      }
+        elements.forEach(function (element) {
+            var computedSize = element.element[getBoundingClientRect]()[dimension];
 
-      this.length -= c;
-      return ret;
-    } // Consumes a specified amount of bytes from the buffered data.
+            if (computedSize < element.minSize) {
+                if (expandToMin) {
+                    adjustToMin(element);
+                } else {
+                    // eslint-disable-next-line no-param-reassign
+                    element.minSize = computedSize;
+                }
+            }
+        });
 
-  }, {
-    key: "_getBuffer",
-    value: function _getBuffer(n) {
-      var ret = Buffer.allocUnsafe(n);
-      var p = this.head;
-      var c = 1;
-      p.data.copy(ret);
-      n -= p.data.length;
+        function setSizes(newSizes) {
+            var trimmed = trimToMin(newSizes);
+            trimmed.forEach(function (newSize, i) {
+                if (i > 0) {
+                    var pair = pairs[i - 1];
 
-      while (p = p.next) {
-        var buf = p.data;
-        var nb = n > buf.length ? buf.length : n;
-        buf.copy(ret, ret.length - n, 0, nb);
-        n -= nb;
+                    var a = elements[pair.a];
+                    var b = elements[pair.b];
 
-        if (n === 0) {
-          if (nb === buf.length) {
-            ++c;
-            if (p.next) this.head = p.next;else this.head = this.tail = null;
-          } else {
-            this.head = p;
-            p.data = buf.slice(nb);
-          }
+                    a.size = trimmed[i - 1];
+                    b.size = newSize;
 
-          break;
+                    setElementSize(a.element, a.size, pair[aGutterSize], a.i);
+                    setElementSize(b.element, b.size, pair[bGutterSize], b.i);
+                }
+            });
         }
 
-        ++c;
-      }
-
-      this.length -= c;
-      return ret;
-    } // Make sure the linked list only shows the minimal necessary information.
-
-  }, {
-    key: custom,
-    value: function value(_, options) {
-      return inspect(this, _objectSpread({}, options, {
-        // Only inspect one level.
-        depth: 0,
-        // It should not recurse.
-        customInspect: false
-      }));
-    }
-  }]);
-
-  return BufferList;
-}();
-},{"buffer":415,"util":414}],528:[function(require,module,exports){
-(function (process){(function (){
-'use strict'; // undocumented cb() API, needed for core, not for public API
-
-function destroy(err, cb) {
-  var _this = this;
-
-  var readableDestroyed = this._readableState && this._readableState.destroyed;
-  var writableDestroyed = this._writableState && this._writableState.destroyed;
-
-  if (readableDestroyed || writableDestroyed) {
-    if (cb) {
-      cb(err);
-    } else if (err) {
-      if (!this._writableState) {
-        process.nextTick(emitErrorNT, this, err);
-      } else if (!this._writableState.errorEmitted) {
-        this._writableState.errorEmitted = true;
-        process.nextTick(emitErrorNT, this, err);
-      }
-    }
-
-    return this;
-  } // we set destroyed to true before firing error callbacks in order
-  // to make it re-entrance safe in case destroy() is called within callbacks
-
-
-  if (this._readableState) {
-    this._readableState.destroyed = true;
-  } // if this is a duplex stream mark the writable part as destroyed as well
-
-
-  if (this._writableState) {
-    this._writableState.destroyed = true;
-  }
-
-  this._destroy(err || null, function (err) {
-    if (!cb && err) {
-      if (!_this._writableState) {
-        process.nextTick(emitErrorAndCloseNT, _this, err);
-      } else if (!_this._writableState.errorEmitted) {
-        _this._writableState.errorEmitted = true;
-        process.nextTick(emitErrorAndCloseNT, _this, err);
-      } else {
-        process.nextTick(emitCloseNT, _this);
-      }
-    } else if (cb) {
-      process.nextTick(emitCloseNT, _this);
-      cb(err);
-    } else {
-      process.nextTick(emitCloseNT, _this);
-    }
-  });
-
-  return this;
-}
-
-function emitErrorAndCloseNT(self, err) {
-  emitErrorNT(self, err);
-  emitCloseNT(self);
-}
-
-function emitCloseNT(self) {
-  if (self._writableState && !self._writableState.emitClose) return;
-  if (self._readableState && !self._readableState.emitClose) return;
-  self.emit('close');
-}
-
-function undestroy() {
-  if (this._readableState) {
-    this._readableState.destroyed = false;
-    this._readableState.reading = false;
-    this._readableState.ended = false;
-    this._readableState.endEmitted = false;
-  }
-
-  if (this._writableState) {
-    this._writableState.destroyed = false;
-    this._writableState.ended = false;
-    this._writableState.ending = false;
-    this._writableState.finalCalled = false;
-    this._writableState.prefinished = false;
-    this._writableState.finished = false;
-    this._writableState.errorEmitted = false;
-  }
-}
-
-function emitErrorNT(self, err) {
-  self.emit('error', err);
-}
-
-function errorOrDestroy(stream, err) {
-  // We have tests that rely on errors being emitted
-  // in the same tick, so changing this is semver major.
-  // For now when you opt-in to autoDestroy we allow
-  // the error to be emitted nextTick. In a future
-  // semver major update we should change the default to this.
-  var rState = stream._readableState;
-  var wState = stream._writableState;
-  if (rState && rState.autoDestroy || wState && wState.autoDestroy) stream.destroy(err);else stream.emit('error', err);
-}
-
-module.exports = {
-  destroy: destroy,
-  undestroy: undestroy,
-  errorOrDestroy: errorOrDestroy
-};
-}).call(this)}).call(this,require('_process'))
-},{"_process":507}],529:[function(require,module,exports){
-// Ported from https://github.com/mafintosh/end-of-stream with
-// permission from the author, Mathias Buus (@mafintosh).
-'use strict';
-
-var ERR_STREAM_PREMATURE_CLOSE = require('../../../errors').codes.ERR_STREAM_PREMATURE_CLOSE;
-
-function once(callback) {
-  var called = false;
-  return function () {
-    if (called) return;
-    called = true;
-
-    for (var _len = arguments.length, args = new Array(_len), _key = 0; _key < _len; _key++) {
-      args[_key] = arguments[_key];
-    }
-
-    callback.apply(this, args);
-  };
-}
-
-function noop() {}
-
-function isRequest(stream) {
-  return stream.setHeader && typeof stream.abort === 'function';
-}
-
-function eos(stream, opts, callback) {
-  if (typeof opts === 'function') return eos(stream, null, opts);
-  if (!opts) opts = {};
-  callback = once(callback || noop);
-  var readable = opts.readable || opts.readable !== false && stream.readable;
-  var writable = opts.writable || opts.writable !== false && stream.writable;
-
-  var onlegacyfinish = function onlegacyfinish() {
-    if (!stream.writable) onfinish();
-  };
-
-  var writableEnded = stream._writableState && stream._writableState.finished;
-
-  var onfinish = function onfinish() {
-    writable = false;
-    writableEnded = true;
-    if (!readable) callback.call(stream);
-  };
-
-  var readableEnded = stream._readableState && stream._readableState.endEmitted;
-
-  var onend = function onend() {
-    readable = false;
-    readableEnded = true;
-    if (!writable) callback.call(stream);
-  };
-
-  var onerror = function onerror(err) {
-    callback.call(stream, err);
-  };
-
-  var onclose = function onclose() {
-    var err;
-
-    if (readable && !readableEnded) {
-      if (!stream._readableState || !stream._readableState.ended) err = new ERR_STREAM_PREMATURE_CLOSE();
-      return callback.call(stream, err);
-    }
-
-    if (writable && !writableEnded) {
-      if (!stream._writableState || !stream._writableState.ended) err = new ERR_STREAM_PREMATURE_CLOSE();
-      return callback.call(stream, err);
-    }
-  };
-
-  var onrequest = function onrequest() {
-    stream.req.on('finish', onfinish);
-  };
-
-  if (isRequest(stream)) {
-    stream.on('complete', onfinish);
-    stream.on('abort', onclose);
-    if (stream.req) onrequest();else stream.on('request', onrequest);
-  } else if (writable && !stream._writableState) {
-    // legacy streams
-    stream.on('end', onlegacyfinish);
-    stream.on('close', onlegacyfinish);
-  }
-
-  stream.on('end', onend);
-  stream.on('finish', onfinish);
-  if (opts.error !== false) stream.on('error', onerror);
-  stream.on('close', onclose);
-  return function () {
-    stream.removeListener('complete', onfinish);
-    stream.removeListener('abort', onclose);
-    stream.removeListener('request', onrequest);
-    if (stream.req) stream.req.removeListener('finish', onfinish);
-    stream.removeListener('end', onlegacyfinish);
-    stream.removeListener('close', onlegacyfinish);
-    stream.removeListener('finish', onfinish);
-    stream.removeListener('end', onend);
-    stream.removeListener('error', onerror);
-    stream.removeListener('close', onclose);
-  };
-}
-
-module.exports = eos;
-},{"../../../errors":520}],530:[function(require,module,exports){
-module.exports = function () {
-  throw new Error('Readable.from is not available in the browser')
-};
-
-},{}],531:[function(require,module,exports){
-// Ported from https://github.com/mafintosh/pump with
-// permission from the author, Mathias Buus (@mafintosh).
-'use strict';
-
-var eos;
-
-function once(callback) {
-  var called = false;
-  return function () {
-    if (called) return;
-    called = true;
-    callback.apply(void 0, arguments);
-  };
-}
-
-var _require$codes = require('../../../errors').codes,
-    ERR_MISSING_ARGS = _require$codes.ERR_MISSING_ARGS,
-    ERR_STREAM_DESTROYED = _require$codes.ERR_STREAM_DESTROYED;
-
-function noop(err) {
-  // Rethrow the error if it exists to avoid swallowing it
-  if (err) throw err;
-}
-
-function isRequest(stream) {
-  return stream.setHeader && typeof stream.abort === 'function';
-}
-
-function destroyer(stream, reading, writing, callback) {
-  callback = once(callback);
-  var closed = false;
-  stream.on('close', function () {
-    closed = true;
-  });
-  if (eos === undefined) eos = require('./end-of-stream');
-  eos(stream, {
-    readable: reading,
-    writable: writing
-  }, function (err) {
-    if (err) return callback(err);
-    closed = true;
-    callback();
-  });
-  var destroyed = false;
-  return function (err) {
-    if (closed) return;
-    if (destroyed) return;
-    destroyed = true; // request.destroy just do .end - .abort is what we want
-
-    if (isRequest(stream)) return stream.abort();
-    if (typeof stream.destroy === 'function') return stream.destroy();
-    callback(err || new ERR_STREAM_DESTROYED('pipe'));
-  };
-}
-
-function call(fn) {
-  fn();
-}
-
-function pipe(from, to) {
-  return from.pipe(to);
-}
-
-function popCallback(streams) {
-  if (!streams.length) return noop;
-  if (typeof streams[streams.length - 1] !== 'function') return noop;
-  return streams.pop();
-}
-
-function pipeline() {
-  for (var _len = arguments.length, streams = new Array(_len), _key = 0; _key < _len; _key++) {
-    streams[_key] = arguments[_key];
-  }
-
-  var callback = popCallback(streams);
-  if (Array.isArray(streams[0])) streams = streams[0];
-
-  if (streams.length < 2) {
-    throw new ERR_MISSING_ARGS('streams');
-  }
-
-  var error;
-  var destroys = streams.map(function (stream, i) {
-    var reading = i < streams.length - 1;
-    var writing = i > 0;
-    return destroyer(stream, reading, writing, function (err) {
-      if (!error) error = err;
-      if (err) destroys.forEach(call);
-      if (reading) return;
-      destroys.forEach(call);
-      callback(error);
-    });
-  });
-  return streams.reduce(pipe);
-}
-
-module.exports = pipeline;
-},{"../../../errors":520,"./end-of-stream":529}],532:[function(require,module,exports){
-'use strict';
-
-var ERR_INVALID_OPT_VALUE = require('../../../errors').codes.ERR_INVALID_OPT_VALUE;
-
-function highWaterMarkFrom(options, isDuplex, duplexKey) {
-  return options.highWaterMark != null ? options.highWaterMark : isDuplex ? options[duplexKey] : null;
-}
-
-function getHighWaterMark(state, options, duplexKey, isDuplex) {
-  var hwm = highWaterMarkFrom(options, isDuplex, duplexKey);
-
-  if (hwm != null) {
-    if (!(isFinite(hwm) && Math.floor(hwm) === hwm) || hwm < 0) {
-      var name = isDuplex ? duplexKey : 'highWaterMark';
-      throw new ERR_INVALID_OPT_VALUE(name, hwm);
-    }
-
-    return Math.floor(hwm);
-  } // Default value
-
-
-  return state.objectMode ? 16 : 16 * 1024;
-}
-
-module.exports = {
-  getHighWaterMark: getHighWaterMark
-};
-},{"../../../errors":520}],533:[function(require,module,exports){
-module.exports = require('events').EventEmitter;
-
-},{"events":422}],534:[function(require,module,exports){
-exports = module.exports = require('./lib/_stream_readable.js');
-exports.Stream = exports;
-exports.Readable = exports;
-exports.Writable = require('./lib/_stream_writable.js');
-exports.Duplex = require('./lib/_stream_duplex.js');
-exports.Transform = require('./lib/_stream_transform.js');
-exports.PassThrough = require('./lib/_stream_passthrough.js');
-exports.finished = require('./lib/internal/streams/end-of-stream.js');
-exports.pipeline = require('./lib/internal/streams/pipeline.js');
-
-},{"./lib/_stream_duplex.js":521,"./lib/_stream_passthrough.js":522,"./lib/_stream_readable.js":523,"./lib/_stream_transform.js":524,"./lib/_stream_writable.js":525,"./lib/internal/streams/end-of-stream.js":529,"./lib/internal/streams/pipeline.js":531}],535:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-/*<replacement>*/
-
-var Buffer = require('safe-buffer').Buffer;
-/*</replacement>*/
-
-var isEncoding = Buffer.isEncoding || function (encoding) {
-  encoding = '' + encoding;
-  switch (encoding && encoding.toLowerCase()) {
-    case 'hex':case 'utf8':case 'utf-8':case 'ascii':case 'binary':case 'base64':case 'ucs2':case 'ucs-2':case 'utf16le':case 'utf-16le':case 'raw':
-      return true;
-    default:
-      return false;
-  }
-};
-
-function _normalizeEncoding(enc) {
-  if (!enc) return 'utf8';
-  var retried;
-  while (true) {
-    switch (enc) {
-      case 'utf8':
-      case 'utf-8':
-        return 'utf8';
-      case 'ucs2':
-      case 'ucs-2':
-      case 'utf16le':
-      case 'utf-16le':
-        return 'utf16le';
-      case 'latin1':
-      case 'binary':
-        return 'latin1';
-      case 'base64':
-      case 'ascii':
-      case 'hex':
-        return enc;
-      default:
-        if (retried) return; // undefined
-        enc = ('' + enc).toLowerCase();
-        retried = true;
-    }
-  }
-};
-
-// Do not cache `Buffer.isEncoding` when checking encoding names as some
-// modules monkey-patch it to support additional encodings
-function normalizeEncoding(enc) {
-  var nenc = _normalizeEncoding(enc);
-  if (typeof nenc !== 'string' && (Buffer.isEncoding === isEncoding || !isEncoding(enc))) throw new Error('Unknown encoding: ' + enc);
-  return nenc || enc;
-}
-
-// StringDecoder provides an interface for efficiently splitting a series of
-// buffers into a series of JS strings without breaking apart multi-byte
-// characters.
-exports.StringDecoder = StringDecoder;
-function StringDecoder(encoding) {
-  this.encoding = normalizeEncoding(encoding);
-  var nb;
-  switch (this.encoding) {
-    case 'utf16le':
-      this.text = utf16Text;
-      this.end = utf16End;
-      nb = 4;
-      break;
-    case 'utf8':
-      this.fillLast = utf8FillLast;
-      nb = 4;
-      break;
-    case 'base64':
-      this.text = base64Text;
-      this.end = base64End;
-      nb = 3;
-      break;
-    default:
-      this.write = simpleWrite;
-      this.end = simpleEnd;
-      return;
-  }
-  this.lastNeed = 0;
-  this.lastTotal = 0;
-  this.lastChar = Buffer.allocUnsafe(nb);
-}
-
-StringDecoder.prototype.write = function (buf) {
-  if (buf.length === 0) return '';
-  var r;
-  var i;
-  if (this.lastNeed) {
-    r = this.fillLast(buf);
-    if (r === undefined) return '';
-    i = this.lastNeed;
-    this.lastNeed = 0;
-  } else {
-    i = 0;
-  }
-  if (i < buf.length) return r ? r + this.text(buf, i) : this.text(buf, i);
-  return r || '';
-};
-
-StringDecoder.prototype.end = utf8End;
-
-// Returns only complete characters in a Buffer
-StringDecoder.prototype.text = utf8Text;
-
-// Attempts to complete a partial non-UTF-8 character using bytes from a Buffer
-StringDecoder.prototype.fillLast = function (buf) {
-  if (this.lastNeed <= buf.length) {
-    buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, this.lastNeed);
-    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
-  }
-  buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, buf.length);
-  this.lastNeed -= buf.length;
-};
-
-// Checks the type of a UTF-8 byte, whether it's ASCII, a leading byte, or a
-// continuation byte. If an invalid byte is detected, -2 is returned.
-function utf8CheckByte(byte) {
-  if (byte <= 0x7F) return 0;else if (byte >> 5 === 0x06) return 2;else if (byte >> 4 === 0x0E) return 3;else if (byte >> 3 === 0x1E) return 4;
-  return byte >> 6 === 0x02 ? -1 : -2;
-}
-
-// Checks at most 3 bytes at the end of a Buffer in order to detect an
-// incomplete multi-byte UTF-8 character. The total number of bytes (2, 3, or 4)
-// needed to complete the UTF-8 character (if applicable) are returned.
-function utf8CheckIncomplete(self, buf, i) {
-  var j = buf.length - 1;
-  if (j < i) return 0;
-  var nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) self.lastNeed = nb - 1;
-    return nb;
-  }
-  if (--j < i || nb === -2) return 0;
-  nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) self.lastNeed = nb - 2;
-    return nb;
-  }
-  if (--j < i || nb === -2) return 0;
-  nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) {
-      if (nb === 2) nb = 0;else self.lastNeed = nb - 3;
-    }
-    return nb;
-  }
-  return 0;
-}
-
-// Validates as many continuation bytes for a multi-byte UTF-8 character as
-// needed or are available. If we see a non-continuation byte where we expect
-// one, we "replace" the validated continuation bytes we've seen so far with
-// a single UTF-8 replacement character ('\ufffd'), to match v8's UTF-8 decoding
-// behavior. The continuation byte check is included three times in the case
-// where all of the continuation bytes for a character exist in the same buffer.
-// It is also done this way as a slight performance increase instead of using a
-// loop.
-function utf8CheckExtraBytes(self, buf, p) {
-  if ((buf[0] & 0xC0) !== 0x80) {
-    self.lastNeed = 0;
-    return '\ufffd';
-  }
-  if (self.lastNeed > 1 && buf.length > 1) {
-    if ((buf[1] & 0xC0) !== 0x80) {
-      self.lastNeed = 1;
-      return '\ufffd';
-    }
-    if (self.lastNeed > 2 && buf.length > 2) {
-      if ((buf[2] & 0xC0) !== 0x80) {
-        self.lastNeed = 2;
-        return '\ufffd';
-      }
-    }
-  }
-}
-
-// Attempts to complete a multi-byte UTF-8 character using bytes from a Buffer.
-function utf8FillLast(buf) {
-  var p = this.lastTotal - this.lastNeed;
-  var r = utf8CheckExtraBytes(this, buf, p);
-  if (r !== undefined) return r;
-  if (this.lastNeed <= buf.length) {
-    buf.copy(this.lastChar, p, 0, this.lastNeed);
-    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
-  }
-  buf.copy(this.lastChar, p, 0, buf.length);
-  this.lastNeed -= buf.length;
-}
-
-// Returns all complete UTF-8 characters in a Buffer. If the Buffer ended on a
-// partial character, the character's bytes are buffered until the required
-// number of bytes are available.
-function utf8Text(buf, i) {
-  var total = utf8CheckIncomplete(this, buf, i);
-  if (!this.lastNeed) return buf.toString('utf8', i);
-  this.lastTotal = total;
-  var end = buf.length - (total - this.lastNeed);
-  buf.copy(this.lastChar, 0, end);
-  return buf.toString('utf8', i, end);
-}
-
-// For UTF-8, a replacement character is added when ending on a partial
-// character.
-function utf8End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) return r + '\ufffd';
-  return r;
-}
-
-// UTF-16LE typically needs two bytes per character, but even if we have an even
-// number of bytes available, we need to check if we end on a leading/high
-// surrogate. In that case, we need to wait for the next two bytes in order to
-// decode the last character properly.
-function utf16Text(buf, i) {
-  if ((buf.length - i) % 2 === 0) {
-    var r = buf.toString('utf16le', i);
-    if (r) {
-      var c = r.charCodeAt(r.length - 1);
-      if (c >= 0xD800 && c <= 0xDBFF) {
-        this.lastNeed = 2;
-        this.lastTotal = 4;
-        this.lastChar[0] = buf[buf.length - 2];
-        this.lastChar[1] = buf[buf.length - 1];
-        return r.slice(0, -1);
-      }
-    }
-    return r;
-  }
-  this.lastNeed = 1;
-  this.lastTotal = 2;
-  this.lastChar[0] = buf[buf.length - 1];
-  return buf.toString('utf16le', i, buf.length - 1);
-}
-
-// For UTF-16LE we do not explicitly append special replacement characters if we
-// end on a partial character, we simply let v8 handle that.
-function utf16End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) {
-    var end = this.lastTotal - this.lastNeed;
-    return r + this.lastChar.toString('utf16le', 0, end);
-  }
-  return r;
-}
-
-function base64Text(buf, i) {
-  var n = (buf.length - i) % 3;
-  if (n === 0) return buf.toString('base64', i);
-  this.lastNeed = 3 - n;
-  this.lastTotal = 3;
-  if (n === 1) {
-    this.lastChar[0] = buf[buf.length - 1];
-  } else {
-    this.lastChar[0] = buf[buf.length - 2];
-    this.lastChar[1] = buf[buf.length - 1];
-  }
-  return buf.toString('base64', i, buf.length - n);
-}
-
-function base64End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) return r + this.lastChar.toString('base64', 0, 3 - this.lastNeed);
-  return r;
-}
-
-// Pass bytes on through for single-byte encodings (e.g. ascii, latin1, hex)
-function simpleWrite(buf) {
-  return buf.toString(this.encoding);
-}
-
-function simpleEnd(buf) {
-  return buf && buf.length ? this.write(buf) : '';
-}
-},{"safe-buffer":512}],536:[function(require,module,exports){
+        function destroy(preserveStyles, preserveGutter) {
+            pairs.forEach(function (pair) {
+                if (preserveGutter !== true) {
+                    pair.parent.removeChild(pair.gutter);
+                } else {
+                    pair.gutter[removeEventListener](
+                        'mousedown',
+                        pair[gutterStartDragging]
+                    );
+                    pair.gutter[removeEventListener](
+                        'touchstart',
+                        pair[gutterStartDragging]
+                    );
+                }
+
+                if (preserveStyles !== true) {
+                    var style = elementStyle(
+                        dimension,
+                        pair.a.size,
+                        pair[aGutterSize]
+                    );
+
+                    Object.keys(style).forEach(function (prop) {
+                        elements[pair.a].element.style[prop] = '';
+                        elements[pair.b].element.style[prop] = '';
+                    });
+                }
+            });
+        }
+
+        return {
+            setSizes: setSizes,
+            getSizes: getSizes,
+            collapse: function collapse(i) {
+                adjustToMin(elements[i]);
+            },
+            destroy: destroy,
+            parent: parent,
+            pairs: pairs,
+        }
+    };
+
+    return Split;
+
+})));
+
+},{}],591:[function(require,module,exports){
 "use strict";
 
 function _toConsumableArray(arr) { return _arrayWithoutHoles(arr) || _iterableToArray(arr) || _unsupportedIterableToArray(arr) || _nonIterableSpread(); }
@@ -29961,7 +30399,7 @@ Agent.prototype._setDefaults = function (req) {
 
 module.exports = Agent;
 
-},{}],537:[function(require,module,exports){
+},{}],592:[function(require,module,exports){
 "use strict";
 
 function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
@@ -30984,7 +31422,7 @@ request.put = function (url, data, fn) {
   return req;
 };
 
-},{"./agent-base":536,"./is-object":538,"./request-base":539,"./response-base":540,"component-emitter":421,"fast-safe-stringify":423,"qs":543}],538:[function(require,module,exports){
+},{"./agent-base":591,"./is-object":593,"./request-base":594,"./response-base":595,"component-emitter":496,"fast-safe-stringify":497,"qs":598}],593:[function(require,module,exports){
 "use strict";
 
 function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
@@ -31002,7 +31440,7 @@ function isObject(obj) {
 
 module.exports = isObject;
 
-},{}],539:[function(require,module,exports){
+},{}],594:[function(require,module,exports){
 "use strict";
 
 function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
@@ -31785,7 +32223,7 @@ RequestBase.prototype._setTimeouts = function () {
   }
 };
 
-},{"./is-object":538}],540:[function(require,module,exports){
+},{"./is-object":593}],595:[function(require,module,exports){
 "use strict";
 
 /**
@@ -31917,7 +32355,7 @@ ResponseBase.prototype._setStatusProperties = function (status) {
   this.unprocessableEntity = status === 422;
 };
 
-},{"./utils":541}],541:[function(require,module,exports){
+},{"./utils":596}],596:[function(require,module,exports){
 "use strict";
 
 function _createForOfIteratorHelper(o, allowArrayLike) { var it; if (typeof Symbol === "undefined" || o[Symbol.iterator] == null) { if (Array.isArray(o) || (it = _unsupportedIterableToArray(o)) || allowArrayLike && o && typeof o.length === "number") { if (it) o = it; var i = 0; var F = function F() {}; return { s: F, n: function n() { if (i >= o.length) return { done: true }; return { done: false, value: o[i++] }; }, e: function e(_e) { throw _e; }, f: F }; } throw new TypeError("Invalid attempt to iterate non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); } var normalCompletion = true, didErr = false, err; return { s: function s() { it = o[Symbol.iterator](); }, n: function n() { var step = it.next(); normalCompletion = step.done; return step; }, e: function e(_e2) { didErr = true; err = _e2; }, f: function f() { try { if (!normalCompletion && it.return != null) it.return(); } finally { if (didErr) throw err; } } }; }
@@ -32023,7 +32461,7 @@ exports.cleanHeader = function (header, changesOrigin) {
   return header;
 };
 
-},{}],542:[function(require,module,exports){
+},{}],597:[function(require,module,exports){
 'use strict';
 
 var replace = String.prototype.replace;
@@ -32048,7 +32486,7 @@ module.exports = {
     RFC3986: Format.RFC3986
 };
 
-},{}],543:[function(require,module,exports){
+},{}],598:[function(require,module,exports){
 'use strict';
 
 var stringify = require('./stringify');
@@ -32061,7 +32499,7 @@ module.exports = {
     stringify: stringify
 };
 
-},{"./formats":542,"./parse":544,"./stringify":545}],544:[function(require,module,exports){
+},{"./formats":597,"./parse":599,"./stringify":600}],599:[function(require,module,exports){
 'use strict';
 
 var utils = require('./utils');
@@ -32326,7 +32764,7 @@ module.exports = function (str, opts) {
     return utils.compact(obj);
 };
 
-},{"./utils":546}],545:[function(require,module,exports){
+},{"./utils":601}],600:[function(require,module,exports){
 'use strict';
 
 var getSideChannel = require('side-channel');
@@ -32618,7 +33056,7 @@ module.exports = function (object, opts) {
     return joined.length > 0 ? prefix + joined : '';
 };
 
-},{"./formats":542,"./utils":546,"side-channel":513}],546:[function(require,module,exports){
+},{"./formats":597,"./utils":601,"side-channel":588}],601:[function(require,module,exports){
 'use strict';
 
 var formats = require('./formats');
@@ -32871,1005 +33309,4 @@ module.exports = {
     merge: merge
 };
 
-},{"./formats":542}],547:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-var punycode = require('punycode');
-var util = require('./util');
-
-exports.parse = urlParse;
-exports.resolve = urlResolve;
-exports.resolveObject = urlResolveObject;
-exports.format = urlFormat;
-
-exports.Url = Url;
-
-function Url() {
-  this.protocol = null;
-  this.slashes = null;
-  this.auth = null;
-  this.host = null;
-  this.port = null;
-  this.hostname = null;
-  this.hash = null;
-  this.search = null;
-  this.query = null;
-  this.pathname = null;
-  this.path = null;
-  this.href = null;
-}
-
-// Reference: RFC 3986, RFC 1808, RFC 2396
-
-// define these here so at least they only have to be
-// compiled once on the first module load.
-var protocolPattern = /^([a-z0-9.+-]+:)/i,
-    portPattern = /:[0-9]*$/,
-
-    // Special case for a simple path URL
-    simplePathPattern = /^(\/\/?(?!\/)[^\?\s]*)(\?[^\s]*)?$/,
-
-    // RFC 2396: characters reserved for delimiting URLs.
-    // We actually just auto-escape these.
-    delims = ['<', '>', '"', '`', ' ', '\r', '\n', '\t'],
-
-    // RFC 2396: characters not allowed for various reasons.
-    unwise = ['{', '}', '|', '\\', '^', '`'].concat(delims),
-
-    // Allowed by RFCs, but cause of XSS attacks.  Always escape these.
-    autoEscape = ['\''].concat(unwise),
-    // Characters that are never ever allowed in a hostname.
-    // Note that any invalid chars are also handled, but these
-    // are the ones that are *expected* to be seen, so we fast-path
-    // them.
-    nonHostChars = ['%', '/', '?', ';', '#'].concat(autoEscape),
-    hostEndingChars = ['/', '?', '#'],
-    hostnameMaxLen = 255,
-    hostnamePartPattern = /^[+a-z0-9A-Z_-]{0,63}$/,
-    hostnamePartStart = /^([+a-z0-9A-Z_-]{0,63})(.*)$/,
-    // protocols that can allow "unsafe" and "unwise" chars.
-    unsafeProtocol = {
-      'javascript': true,
-      'javascript:': true
-    },
-    // protocols that never have a hostname.
-    hostlessProtocol = {
-      'javascript': true,
-      'javascript:': true
-    },
-    // protocols that always contain a // bit.
-    slashedProtocol = {
-      'http': true,
-      'https': true,
-      'ftp': true,
-      'gopher': true,
-      'file': true,
-      'http:': true,
-      'https:': true,
-      'ftp:': true,
-      'gopher:': true,
-      'file:': true
-    },
-    querystring = require('querystring');
-
-function urlParse(url, parseQueryString, slashesDenoteHost) {
-  if (url && util.isObject(url) && url instanceof Url) return url;
-
-  var u = new Url;
-  u.parse(url, parseQueryString, slashesDenoteHost);
-  return u;
-}
-
-Url.prototype.parse = function(url, parseQueryString, slashesDenoteHost) {
-  if (!util.isString(url)) {
-    throw new TypeError("Parameter 'url' must be a string, not " + typeof url);
-  }
-
-  // Copy chrome, IE, opera backslash-handling behavior.
-  // Back slashes before the query string get converted to forward slashes
-  // See: https://code.google.com/p/chromium/issues/detail?id=25916
-  var queryIndex = url.indexOf('?'),
-      splitter =
-          (queryIndex !== -1 && queryIndex < url.indexOf('#')) ? '?' : '#',
-      uSplit = url.split(splitter),
-      slashRegex = /\\/g;
-  uSplit[0] = uSplit[0].replace(slashRegex, '/');
-  url = uSplit.join(splitter);
-
-  var rest = url;
-
-  // trim before proceeding.
-  // This is to support parse stuff like "  http://foo.com  \n"
-  rest = rest.trim();
-
-  if (!slashesDenoteHost && url.split('#').length === 1) {
-    // Try fast path regexp
-    var simplePath = simplePathPattern.exec(rest);
-    if (simplePath) {
-      this.path = rest;
-      this.href = rest;
-      this.pathname = simplePath[1];
-      if (simplePath[2]) {
-        this.search = simplePath[2];
-        if (parseQueryString) {
-          this.query = querystring.parse(this.search.substr(1));
-        } else {
-          this.query = this.search.substr(1);
-        }
-      } else if (parseQueryString) {
-        this.search = '';
-        this.query = {};
-      }
-      return this;
-    }
-  }
-
-  var proto = protocolPattern.exec(rest);
-  if (proto) {
-    proto = proto[0];
-    var lowerProto = proto.toLowerCase();
-    this.protocol = lowerProto;
-    rest = rest.substr(proto.length);
-  }
-
-  // figure out if it's got a host
-  // user@server is *always* interpreted as a hostname, and url
-  // resolution will treat //foo/bar as host=foo,path=bar because that's
-  // how the browser resolves relative URLs.
-  if (slashesDenoteHost || proto || rest.match(/^\/\/[^@\/]+@[^@\/]+/)) {
-    var slashes = rest.substr(0, 2) === '//';
-    if (slashes && !(proto && hostlessProtocol[proto])) {
-      rest = rest.substr(2);
-      this.slashes = true;
-    }
-  }
-
-  if (!hostlessProtocol[proto] &&
-      (slashes || (proto && !slashedProtocol[proto]))) {
-
-    // there's a hostname.
-    // the first instance of /, ?, ;, or # ends the host.
-    //
-    // If there is an @ in the hostname, then non-host chars *are* allowed
-    // to the left of the last @ sign, unless some host-ending character
-    // comes *before* the @-sign.
-    // URLs are obnoxious.
-    //
-    // ex:
-    // http://a@b@c/ => user:a@b host:c
-    // http://a@b?@c => user:a host:c path:/?@c
-
-    // v0.12 TODO(isaacs): This is not quite how Chrome does things.
-    // Review our test case against browsers more comprehensively.
-
-    // find the first instance of any hostEndingChars
-    var hostEnd = -1;
-    for (var i = 0; i < hostEndingChars.length; i++) {
-      var hec = rest.indexOf(hostEndingChars[i]);
-      if (hec !== -1 && (hostEnd === -1 || hec < hostEnd))
-        hostEnd = hec;
-    }
-
-    // at this point, either we have an explicit point where the
-    // auth portion cannot go past, or the last @ char is the decider.
-    var auth, atSign;
-    if (hostEnd === -1) {
-      // atSign can be anywhere.
-      atSign = rest.lastIndexOf('@');
-    } else {
-      // atSign must be in auth portion.
-      // http://a@b/c@d => host:b auth:a path:/c@d
-      atSign = rest.lastIndexOf('@', hostEnd);
-    }
-
-    // Now we have a portion which is definitely the auth.
-    // Pull that off.
-    if (atSign !== -1) {
-      auth = rest.slice(0, atSign);
-      rest = rest.slice(atSign + 1);
-      this.auth = decodeURIComponent(auth);
-    }
-
-    // the host is the remaining to the left of the first non-host char
-    hostEnd = -1;
-    for (var i = 0; i < nonHostChars.length; i++) {
-      var hec = rest.indexOf(nonHostChars[i]);
-      if (hec !== -1 && (hostEnd === -1 || hec < hostEnd))
-        hostEnd = hec;
-    }
-    // if we still have not hit it, then the entire thing is a host.
-    if (hostEnd === -1)
-      hostEnd = rest.length;
-
-    this.host = rest.slice(0, hostEnd);
-    rest = rest.slice(hostEnd);
-
-    // pull out port.
-    this.parseHost();
-
-    // we've indicated that there is a hostname,
-    // so even if it's empty, it has to be present.
-    this.hostname = this.hostname || '';
-
-    // if hostname begins with [ and ends with ]
-    // assume that it's an IPv6 address.
-    var ipv6Hostname = this.hostname[0] === '[' &&
-        this.hostname[this.hostname.length - 1] === ']';
-
-    // validate a little.
-    if (!ipv6Hostname) {
-      var hostparts = this.hostname.split(/\./);
-      for (var i = 0, l = hostparts.length; i < l; i++) {
-        var part = hostparts[i];
-        if (!part) continue;
-        if (!part.match(hostnamePartPattern)) {
-          var newpart = '';
-          for (var j = 0, k = part.length; j < k; j++) {
-            if (part.charCodeAt(j) > 127) {
-              // we replace non-ASCII char with a temporary placeholder
-              // we need this to make sure size of hostname is not
-              // broken by replacing non-ASCII by nothing
-              newpart += 'x';
-            } else {
-              newpart += part[j];
-            }
-          }
-          // we test again with ASCII char only
-          if (!newpart.match(hostnamePartPattern)) {
-            var validParts = hostparts.slice(0, i);
-            var notHost = hostparts.slice(i + 1);
-            var bit = part.match(hostnamePartStart);
-            if (bit) {
-              validParts.push(bit[1]);
-              notHost.unshift(bit[2]);
-            }
-            if (notHost.length) {
-              rest = '/' + notHost.join('.') + rest;
-            }
-            this.hostname = validParts.join('.');
-            break;
-          }
-        }
-      }
-    }
-
-    if (this.hostname.length > hostnameMaxLen) {
-      this.hostname = '';
-    } else {
-      // hostnames are always lower case.
-      this.hostname = this.hostname.toLowerCase();
-    }
-
-    if (!ipv6Hostname) {
-      // IDNA Support: Returns a punycoded representation of "domain".
-      // It only converts parts of the domain name that
-      // have non-ASCII characters, i.e. it doesn't matter if
-      // you call it with a domain that already is ASCII-only.
-      this.hostname = punycode.toASCII(this.hostname);
-    }
-
-    var p = this.port ? ':' + this.port : '';
-    var h = this.hostname || '';
-    this.host = h + p;
-    this.href += this.host;
-
-    // strip [ and ] from the hostname
-    // the host field still retains them, though
-    if (ipv6Hostname) {
-      this.hostname = this.hostname.substr(1, this.hostname.length - 2);
-      if (rest[0] !== '/') {
-        rest = '/' + rest;
-      }
-    }
-  }
-
-  // now rest is set to the post-host stuff.
-  // chop off any delim chars.
-  if (!unsafeProtocol[lowerProto]) {
-
-    // First, make 100% sure that any "autoEscape" chars get
-    // escaped, even if encodeURIComponent doesn't think they
-    // need to be.
-    for (var i = 0, l = autoEscape.length; i < l; i++) {
-      var ae = autoEscape[i];
-      if (rest.indexOf(ae) === -1)
-        continue;
-      var esc = encodeURIComponent(ae);
-      if (esc === ae) {
-        esc = escape(ae);
-      }
-      rest = rest.split(ae).join(esc);
-    }
-  }
-
-
-  // chop off from the tail first.
-  var hash = rest.indexOf('#');
-  if (hash !== -1) {
-    // got a fragment string.
-    this.hash = rest.substr(hash);
-    rest = rest.slice(0, hash);
-  }
-  var qm = rest.indexOf('?');
-  if (qm !== -1) {
-    this.search = rest.substr(qm);
-    this.query = rest.substr(qm + 1);
-    if (parseQueryString) {
-      this.query = querystring.parse(this.query);
-    }
-    rest = rest.slice(0, qm);
-  } else if (parseQueryString) {
-    // no query string, but parseQueryString still requested
-    this.search = '';
-    this.query = {};
-  }
-  if (rest) this.pathname = rest;
-  if (slashedProtocol[lowerProto] &&
-      this.hostname && !this.pathname) {
-    this.pathname = '/';
-  }
-
-  //to support http.request
-  if (this.pathname || this.search) {
-    var p = this.pathname || '';
-    var s = this.search || '';
-    this.path = p + s;
-  }
-
-  // finally, reconstruct the href based on what has been validated.
-  this.href = this.format();
-  return this;
-};
-
-// format a parsed object into a url string
-function urlFormat(obj) {
-  // ensure it's an object, and not a string url.
-  // If it's an obj, this is a no-op.
-  // this way, you can call url_format() on strings
-  // to clean up potentially wonky urls.
-  if (util.isString(obj)) obj = urlParse(obj);
-  if (!(obj instanceof Url)) return Url.prototype.format.call(obj);
-  return obj.format();
-}
-
-Url.prototype.format = function() {
-  var auth = this.auth || '';
-  if (auth) {
-    auth = encodeURIComponent(auth);
-    auth = auth.replace(/%3A/i, ':');
-    auth += '@';
-  }
-
-  var protocol = this.protocol || '',
-      pathname = this.pathname || '',
-      hash = this.hash || '',
-      host = false,
-      query = '';
-
-  if (this.host) {
-    host = auth + this.host;
-  } else if (this.hostname) {
-    host = auth + (this.hostname.indexOf(':') === -1 ?
-        this.hostname :
-        '[' + this.hostname + ']');
-    if (this.port) {
-      host += ':' + this.port;
-    }
-  }
-
-  if (this.query &&
-      util.isObject(this.query) &&
-      Object.keys(this.query).length) {
-    query = querystring.stringify(this.query);
-  }
-
-  var search = this.search || (query && ('?' + query)) || '';
-
-  if (protocol && protocol.substr(-1) !== ':') protocol += ':';
-
-  // only the slashedProtocols get the //.  Not mailto:, xmpp:, etc.
-  // unless they had them to begin with.
-  if (this.slashes ||
-      (!protocol || slashedProtocol[protocol]) && host !== false) {
-    host = '//' + (host || '');
-    if (pathname && pathname.charAt(0) !== '/') pathname = '/' + pathname;
-  } else if (!host) {
-    host = '';
-  }
-
-  if (hash && hash.charAt(0) !== '#') hash = '#' + hash;
-  if (search && search.charAt(0) !== '?') search = '?' + search;
-
-  pathname = pathname.replace(/[?#]/g, function(match) {
-    return encodeURIComponent(match);
-  });
-  search = search.replace('#', '%23');
-
-  return protocol + host + pathname + search + hash;
-};
-
-function urlResolve(source, relative) {
-  return urlParse(source, false, true).resolve(relative);
-}
-
-Url.prototype.resolve = function(relative) {
-  return this.resolveObject(urlParse(relative, false, true)).format();
-};
-
-function urlResolveObject(source, relative) {
-  if (!source) return relative;
-  return urlParse(source, false, true).resolveObject(relative);
-}
-
-Url.prototype.resolveObject = function(relative) {
-  if (util.isString(relative)) {
-    var rel = new Url();
-    rel.parse(relative, false, true);
-    relative = rel;
-  }
-
-  var result = new Url();
-  var tkeys = Object.keys(this);
-  for (var tk = 0; tk < tkeys.length; tk++) {
-    var tkey = tkeys[tk];
-    result[tkey] = this[tkey];
-  }
-
-  // hash is always overridden, no matter what.
-  // even href="" will remove it.
-  result.hash = relative.hash;
-
-  // if the relative url is empty, then there's nothing left to do here.
-  if (relative.href === '') {
-    result.href = result.format();
-    return result;
-  }
-
-  // hrefs like //foo/bar always cut to the protocol.
-  if (relative.slashes && !relative.protocol) {
-    // take everything except the protocol from relative
-    var rkeys = Object.keys(relative);
-    for (var rk = 0; rk < rkeys.length; rk++) {
-      var rkey = rkeys[rk];
-      if (rkey !== 'protocol')
-        result[rkey] = relative[rkey];
-    }
-
-    //urlParse appends trailing / to urls like http://www.example.com
-    if (slashedProtocol[result.protocol] &&
-        result.hostname && !result.pathname) {
-      result.path = result.pathname = '/';
-    }
-
-    result.href = result.format();
-    return result;
-  }
-
-  if (relative.protocol && relative.protocol !== result.protocol) {
-    // if it's a known url protocol, then changing
-    // the protocol does weird things
-    // first, if it's not file:, then we MUST have a host,
-    // and if there was a path
-    // to begin with, then we MUST have a path.
-    // if it is file:, then the host is dropped,
-    // because that's known to be hostless.
-    // anything else is assumed to be absolute.
-    if (!slashedProtocol[relative.protocol]) {
-      var keys = Object.keys(relative);
-      for (var v = 0; v < keys.length; v++) {
-        var k = keys[v];
-        result[k] = relative[k];
-      }
-      result.href = result.format();
-      return result;
-    }
-
-    result.protocol = relative.protocol;
-    if (!relative.host && !hostlessProtocol[relative.protocol]) {
-      var relPath = (relative.pathname || '').split('/');
-      while (relPath.length && !(relative.host = relPath.shift()));
-      if (!relative.host) relative.host = '';
-      if (!relative.hostname) relative.hostname = '';
-      if (relPath[0] !== '') relPath.unshift('');
-      if (relPath.length < 2) relPath.unshift('');
-      result.pathname = relPath.join('/');
-    } else {
-      result.pathname = relative.pathname;
-    }
-    result.search = relative.search;
-    result.query = relative.query;
-    result.host = relative.host || '';
-    result.auth = relative.auth;
-    result.hostname = relative.hostname || relative.host;
-    result.port = relative.port;
-    // to support http.request
-    if (result.pathname || result.search) {
-      var p = result.pathname || '';
-      var s = result.search || '';
-      result.path = p + s;
-    }
-    result.slashes = result.slashes || relative.slashes;
-    result.href = result.format();
-    return result;
-  }
-
-  var isSourceAbs = (result.pathname && result.pathname.charAt(0) === '/'),
-      isRelAbs = (
-          relative.host ||
-          relative.pathname && relative.pathname.charAt(0) === '/'
-      ),
-      mustEndAbs = (isRelAbs || isSourceAbs ||
-                    (result.host && relative.pathname)),
-      removeAllDots = mustEndAbs,
-      srcPath = result.pathname && result.pathname.split('/') || [],
-      relPath = relative.pathname && relative.pathname.split('/') || [],
-      psychotic = result.protocol && !slashedProtocol[result.protocol];
-
-  // if the url is a non-slashed url, then relative
-  // links like ../.. should be able
-  // to crawl up to the hostname, as well.  This is strange.
-  // result.protocol has already been set by now.
-  // Later on, put the first path part into the host field.
-  if (psychotic) {
-    result.hostname = '';
-    result.port = null;
-    if (result.host) {
-      if (srcPath[0] === '') srcPath[0] = result.host;
-      else srcPath.unshift(result.host);
-    }
-    result.host = '';
-    if (relative.protocol) {
-      relative.hostname = null;
-      relative.port = null;
-      if (relative.host) {
-        if (relPath[0] === '') relPath[0] = relative.host;
-        else relPath.unshift(relative.host);
-      }
-      relative.host = null;
-    }
-    mustEndAbs = mustEndAbs && (relPath[0] === '' || srcPath[0] === '');
-  }
-
-  if (isRelAbs) {
-    // it's absolute.
-    result.host = (relative.host || relative.host === '') ?
-                  relative.host : result.host;
-    result.hostname = (relative.hostname || relative.hostname === '') ?
-                      relative.hostname : result.hostname;
-    result.search = relative.search;
-    result.query = relative.query;
-    srcPath = relPath;
-    // fall through to the dot-handling below.
-  } else if (relPath.length) {
-    // it's relative
-    // throw away the existing file, and take the new path instead.
-    if (!srcPath) srcPath = [];
-    srcPath.pop();
-    srcPath = srcPath.concat(relPath);
-    result.search = relative.search;
-    result.query = relative.query;
-  } else if (!util.isNullOrUndefined(relative.search)) {
-    // just pull out the search.
-    // like href='?foo'.
-    // Put this after the other two cases because it simplifies the booleans
-    if (psychotic) {
-      result.hostname = result.host = srcPath.shift();
-      //occationaly the auth can get stuck only in host
-      //this especially happens in cases like
-      //url.resolveObject('mailto:local1@domain1', 'local2@domain2')
-      var authInHost = result.host && result.host.indexOf('@') > 0 ?
-                       result.host.split('@') : false;
-      if (authInHost) {
-        result.auth = authInHost.shift();
-        result.host = result.hostname = authInHost.shift();
-      }
-    }
-    result.search = relative.search;
-    result.query = relative.query;
-    //to support http.request
-    if (!util.isNull(result.pathname) || !util.isNull(result.search)) {
-      result.path = (result.pathname ? result.pathname : '') +
-                    (result.search ? result.search : '');
-    }
-    result.href = result.format();
-    return result;
-  }
-
-  if (!srcPath.length) {
-    // no path at all.  easy.
-    // we've already handled the other stuff above.
-    result.pathname = null;
-    //to support http.request
-    if (result.search) {
-      result.path = '/' + result.search;
-    } else {
-      result.path = null;
-    }
-    result.href = result.format();
-    return result;
-  }
-
-  // if a url ENDs in . or .., then it must get a trailing slash.
-  // however, if it ends in anything else non-slashy,
-  // then it must NOT get a trailing slash.
-  var last = srcPath.slice(-1)[0];
-  var hasTrailingSlash = (
-      (result.host || relative.host || srcPath.length > 1) &&
-      (last === '.' || last === '..') || last === '');
-
-  // strip single dots, resolve double dots to parent dir
-  // if the path tries to go above the root, `up` ends up > 0
-  var up = 0;
-  for (var i = srcPath.length; i >= 0; i--) {
-    last = srcPath[i];
-    if (last === '.') {
-      srcPath.splice(i, 1);
-    } else if (last === '..') {
-      srcPath.splice(i, 1);
-      up++;
-    } else if (up) {
-      srcPath.splice(i, 1);
-      up--;
-    }
-  }
-
-  // if the path is allowed to go above the root, restore leading ..s
-  if (!mustEndAbs && !removeAllDots) {
-    for (; up--; up) {
-      srcPath.unshift('..');
-    }
-  }
-
-  if (mustEndAbs && srcPath[0] !== '' &&
-      (!srcPath[0] || srcPath[0].charAt(0) !== '/')) {
-    srcPath.unshift('');
-  }
-
-  if (hasTrailingSlash && (srcPath.join('/').substr(-1) !== '/')) {
-    srcPath.push('');
-  }
-
-  var isAbsolute = srcPath[0] === '' ||
-      (srcPath[0] && srcPath[0].charAt(0) === '/');
-
-  // put the host back
-  if (psychotic) {
-    result.hostname = result.host = isAbsolute ? '' :
-                                    srcPath.length ? srcPath.shift() : '';
-    //occationaly the auth can get stuck only in host
-    //this especially happens in cases like
-    //url.resolveObject('mailto:local1@domain1', 'local2@domain2')
-    var authInHost = result.host && result.host.indexOf('@') > 0 ?
-                     result.host.split('@') : false;
-    if (authInHost) {
-      result.auth = authInHost.shift();
-      result.host = result.hostname = authInHost.shift();
-    }
-  }
-
-  mustEndAbs = mustEndAbs || (result.host && srcPath.length);
-
-  if (mustEndAbs && !isAbsolute) {
-    srcPath.unshift('');
-  }
-
-  if (!srcPath.length) {
-    result.pathname = null;
-    result.path = null;
-  } else {
-    result.pathname = srcPath.join('/');
-  }
-
-  //to support request.http
-  if (!util.isNull(result.pathname) || !util.isNull(result.search)) {
-    result.path = (result.pathname ? result.pathname : '') +
-                  (result.search ? result.search : '');
-  }
-  result.auth = relative.auth || result.auth;
-  result.slashes = result.slashes || relative.slashes;
-  result.href = result.format();
-  return result;
-};
-
-Url.prototype.parseHost = function() {
-  var host = this.host;
-  var port = portPattern.exec(host);
-  if (port) {
-    port = port[0];
-    if (port !== ':') {
-      this.port = port.substr(1);
-    }
-    host = host.substr(0, host.length - port.length);
-  }
-  if (host) this.hostname = host;
-};
-
-},{"./util":548,"punycode":508,"querystring":511}],548:[function(require,module,exports){
-'use strict';
-
-module.exports = {
-  isString: function(arg) {
-    return typeof(arg) === 'string';
-  },
-  isObject: function(arg) {
-    return typeof(arg) === 'object' && arg !== null;
-  },
-  isNull: function(arg) {
-    return arg === null;
-  },
-  isNullOrUndefined: function(arg) {
-    return arg == null;
-  }
-};
-
-},{}],549:[function(require,module,exports){
-(function (global){(function (){
-
-/**
- * Module exports.
- */
-
-module.exports = deprecate;
-
-/**
- * Mark that a method should not be used.
- * Returns a modified function which warns once by default.
- *
- * If `localStorage.noDeprecation = true` is set, then it is a no-op.
- *
- * If `localStorage.throwDeprecation = true` is set, then deprecated functions
- * will throw an Error when invoked.
- *
- * If `localStorage.traceDeprecation = true` is set, then deprecated functions
- * will invoke `console.trace()` instead of `console.error()`.
- *
- * @param {Function} fn - the function to deprecate
- * @param {String} msg - the string to print to the console when `fn` is invoked
- * @returns {Function} a new "deprecated" version of `fn`
- * @api public
- */
-
-function deprecate (fn, msg) {
-  if (config('noDeprecation')) {
-    return fn;
-  }
-
-  var warned = false;
-  function deprecated() {
-    if (!warned) {
-      if (config('throwDeprecation')) {
-        throw new Error(msg);
-      } else if (config('traceDeprecation')) {
-        console.trace(msg);
-      } else {
-        console.warn(msg);
-      }
-      warned = true;
-    }
-    return fn.apply(this, arguments);
-  }
-
-  return deprecated;
-}
-
-/**
- * Checks `localStorage` for boolean values for the given `name`.
- *
- * @param {String} name
- * @returns {Boolean}
- * @api private
- */
-
-function config (name) {
-  // accessing global.localStorage can trigger a DOMException in sandboxed iframes
-  try {
-    if (!global.localStorage) return false;
-  } catch (_) {
-    return false;
-  }
-  var val = global.localStorage[name];
-  if (null == val) return false;
-  return String(val).toLowerCase() === 'true';
-}
-
-}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],550:[function(require,module,exports){
-module.exports = extend
-
-var hasOwnProperty = Object.prototype.hasOwnProperty;
-
-function extend() {
-    var target = {}
-
-    for (var i = 0; i < arguments.length; i++) {
-        var source = arguments[i]
-
-        for (var key in source) {
-            if (hasOwnProperty.call(source, key)) {
-                target[key] = source[key]
-            }
-        }
-    }
-
-    return target
-}
-
-},{}],551:[function(require,module,exports){
-const {prepareRender, drawCommands, cameras, entitiesFromSolids} = require('@jscad/regl-renderer')
-
-const http = require('http');
-const superagent = require('superagent');
-
-// setup demo solids data
-const demoSolids = (parameters) => {
-    const {colorize} = require('@jscad/modeling').colors
-    const {cube, cuboid, line, sphere, star} = require('@jscad/modeling').primitives
-    const {intersect, subtract} = require('@jscad/modeling').booleans
-
-    /*const logo = [
-        colorize([1.0, 0.4, 1.0], subtract(
-            cube({size: 300}),
-            sphere({radius: 200})
-        )),
-        colorize([1.0, 1.0, 0], intersect(
-            sphere({radius: 130}),
-            cube({size: 210})
-        ))
-    ]
-
-    const transpCube = colorize([1, 0, 0, 0.75], cuboid({size: [100 * parameters.scale, 100, 210 + (200 * parameters.scale)]}))
-    const star2D = star({vertices: 8, innerRadius: 150, outerRadius: 200})
-    const line2D = colorize([1.0, 0, 0], line([[220, 220], [-220, 220], [-220, -220], [220, -220], [220, 220]]))
-
-    return [transpCube, line2D, star2D, ...logo]*/
-
-    return cube({size: 100})
-}
-
-const width = window.innerWidth
-const height = window.innerHeight
-
-//const diagram = http.get("http://localhost:8080/jscad_diagram");
-
-// process entities and inject extras
-const entities = entitiesFromSolids({}, demoSolids({scale: 1}))
-
-// prepare the camera
-const perspectiveCamera = cameras.perspective
-const camera = Object.assign({}, perspectiveCamera.defaults)
-perspectiveCamera.setProjection(camera, camera, {width, height})
-perspectiveCamera.update(camera, camera)
-
-const standart_options = [
-    { // grid data
-        // the choice of what draw command to use is also data based
-        visuals: {
-            drawCmd: 'drawGrid',
-            show: true
-        },
-        size: [500, 500],
-        ticks: [25, 5],
-        // color: [0, 0, 1, 1],
-        // subColor: [0, 0, 1, 0.5]
-    },
-    {
-        visuals: {
-            drawCmd: 'drawAxis',
-            show: true
-        },
-        size: 300,
-        // alwaysVisible: false,
-        // xColor: [0, 0, 1, 1],
-        // yColor: [1, 0, 1, 1],
-        // zColor: [0, 0, 0, 1]
-    }
-    ]
-
-const options = {
-    glOptions: {container: document.body},
-    camera,
-    drawCommands: {
-        // draw commands bootstrap themselves the first time they are run
-        drawAxis: drawCommands.drawAxis,
-        drawGrid: drawCommands.drawGrid,
-        drawLines: drawCommands.drawLines,
-        drawMesh: drawCommands.drawMesh
-    },
-    // data
-    entities: [
-        ...standart_options,
-        ...entities
-    ]
-    // entities: [
-    //     { // grid data
-    //         // the choice of what draw command to use is also data based
-    //         visuals: {
-    //             drawCmd: 'drawGrid',
-    //             show: true
-    //         },
-    //         size: [500, 500],
-    //         ticks: [25, 5],
-    //         // color: [0, 0, 1, 1],
-    //         // subColor: [0, 0, 1, 0.5]
-    //     },
-    //     {
-    //         visuals: {
-    //             drawCmd: 'drawAxis',
-    //             show: true
-    //         },
-    //         size: 300,
-    //         // alwaysVisible: false,
-    //         // xColor: [0, 0, 1, 1],
-    //         // yColor: [1, 0, 1, 1],
-    //         // zColor: [0, 0, 0, 1]
-    //     },
-    //     ...entities
-    // ]
-}
-// prepare
-const render = prepareRender(options)
-// do the actual render :  it is a simple function !
-render(options)
-
-// some live animation example
-// let tick = 0
-
-// let updateCounter = 0
-// const updateAndRender = () => {
-//     tick += 0.01
-//     camera.position[0] = Math.cos(tick) * 800
-//     perspectiveCamera.update(camera, camera)
-//     options.camera = camera
-//
-//     // dynamic geometries, yes indeed !, uncomment this if you want to show it
-//     updateCounter += 1
-//     console.log(updateCounter);
-//
-//     if (updateCounter > 360) {
-//         const entitiesDynamic = entitiesFromSolids({}, demoSolids({ scale: Math.random() }))
-//         //const entitiesDynamic = entitiesFromSolids({}, diagram)
-//         options.entities = [...standart_options, ...entitiesDynamic]
-//         updateCounter = 0
-//     }
-//
-//     // you can change the state of the viewer at any time by just calling the viewer
-//     // function again with different params
-//     render(options)
-//     window.requestAnimationFrame(updateAndRender)
-// }
-// window.requestAnimationFrame(updateAndRender);
-
-superagent.get('/jscad_diagram').then((res, err) => {
-    if (err) {
-        console.log("ERROR");
-        console.log(err);
-    } else {
-        console.log("WORKED");
-        console.log(res.body);
-        const entitiesDynamic = entitiesFromSolids({}, res.body);
-        options.entities = [...standart_options, ...entitiesDynamic]
-        render(options);
-    }
-})
-},{"@jscad/modeling":93,"@jscad/regl-renderer":400,"http":515,"superagent":537}]},{},[551]);
+},{"./formats":597}]},{},[1]);

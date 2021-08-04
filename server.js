@@ -7,6 +7,7 @@ const app = express();
 const port = process.env.PORT || 8080;
 
 app.use('/public', express.static(__dirname + '/public'));
+app.use('/dist', express.static(__dirname + '/dist'));
 app.use('/OpenJSCAD.org', express.static(__dirname + '/OpenJSCAD.org'));
 
 // sendFile will go here
@@ -45,6 +46,9 @@ app.get('/jscad', function(req, res) {
 });
 app.get('/jscad_diagram', function(req, res) {
     res.json(diagram.main());
+});
+app.get('/webpack', function(req, res) {
+    res.sendFile(path.join(__dirname, '/dist/index.html'));
 });
 
 app.listen(port);

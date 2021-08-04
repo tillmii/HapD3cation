@@ -1,0 +1,15 @@
+html{
+    height: 100%;
+}
+
+body {
+    height: 100%;
+}
+
+/* not demo specific code*/
+.jscad {
+    height: 100%;
+    width: 100%;
+    font-family: 'Open Sans', sans-serif;
+    font-size: 0.875em;
+}
