@@ -6,6 +6,8 @@ import viewer from '../cjs/viewer'
 import superagent from 'superagent'
 import Split from 'split.js'
 
+import * as monaco from 'monaco-editor'
+
 function component() {
     const element = document.createElement('div');
 
@@ -20,6 +22,16 @@ Split(['#split-0', '#split-1'])
 Split(['#split-2', '#split-3'], {
     direction: 'vertical',
 })
+
+let editor = monaco.editor.create(document.getElementById("editor"), {
+    value: "function hello() {\n\talert('Hello world!');\n}",
+    language: "javascript",
+    minimap: {
+        enabled: false
+    },
+});
+
+
 
 superagent.get('/jscad_diagram').then((res, err) => {
     if (err) {
