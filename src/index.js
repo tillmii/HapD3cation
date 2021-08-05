@@ -1,3 +1,6 @@
+import React from "react";
+import ReactDOM from "react-dom";
+
 import _ from 'lodash';
 import './style.css';
 import '../public/css/split.css'
@@ -31,7 +34,20 @@ let editor = monaco.editor.create(document.getElementById("editor"), {
     },
 });
 
+class Game extends React.Component {
+    render() {
+        return (
+        <div>
+            Test Wohooo
+        </div>
+        );
+    }
+}
 
+ReactDOM.render(
+    <Game />,
+    document.getElementById('test3')
+);
 
 superagent.get('/jscad_diagram').then((res, err) => {
     if (err) {
