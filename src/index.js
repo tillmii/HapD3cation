@@ -7,46 +7,111 @@ import '../public/css/split.css'
 
 import viewer from '../cjs/viewer'
 import superagent from 'superagent'
-import Split from 'split.js'
+import Split from 'react-split'
 
-import * as monaco from 'monaco-editor'
+import MonacoEditor from "react-monaco-editor";
 
-function component() {
-    const element = document.createElement('div');
 
-    // Lodash, now imported by this script
-    element.innerHTML = _.join(['Hello', 'webpack'], ' ');
-    element.classList.add('hello');
-
-    return element;
+class EditorComponent extends React.Component {
+    constructor(props) {
+        super(props);
+        this.state = {
+            initialized: false,
+            code: '// type your code...',
+        }
+    }
+    editorDidMount(editor, monaco) {
+        console.log('editorDidMount', editor);
+        this.editorx = editor;
+        editor.focus();
+        //editor.layout();
+    }
+    onChange(newValue, e) {
+        //console.log('onChange', newValue, e);
+    }
+    render() {
+        const code = this.state.code;
+        const options = {
+            language: "javascript",
+            minimap: {
+                enabled: false
+            },
+            automaticLayout: true,
+        };
+        return (
+            <MonacoEditor
+                language="javascript"
+                theme="vs"
+                value={this.props.code}
+                options={options}
+                onChange={this.props.onChange}
+                editorDidMount={this.editorDidMount}
+            />
+        );
+    }
 }
 
-Split(['#split-0', '#split-1'])
-Split(['#split-2', '#split-3'], {
-    direction: 'vertical',
-})
-
-let editor = monaco.editor.create(document.getElementById("editor"), {
-    value: "function hello() {\n\talert('Hello world!');\n}",
-    language: "javascript",
-    minimap: {
-        enabled: false
-    },
-});
-
-class Game extends React.Component {
+class DataComponent extends React.Component {
     render() {
         return (
-        <div>
-            Test Wohooo
-        </div>
+            <div>
+                {this.props.specification}
+            </div>
+        );
+    }
+}
+
+class Game extends React.Component {
+    constructor(props) {
+        super(props);
+        this.state = {
+            specification: 'Test',
+        }
+    }
+
+    onChange = (newValue, e) => {
+        // console.log('onChange', newValue, e);
+        this.setState({
+            specification: newValue,
+        })
+    }
+
+    handleCodeUpdate() {
+
+    }
+
+    render() {
+        return (
+        <Split
+            className="split"
+        >
+            <div
+                className="full-height"
+            >
+                <EditorComponent code={this.state.specification} onChange={this.onChange}/>
+            </div>
+            <div
+                className="full-height"
+            >
+                <Split
+                    className="full-height"
+                    direction="vertical"
+                >
+                    <div id="jscad">
+                    </div>
+                    <div>
+                        <DataComponent specification={this.state.specification}/>
+                    </div>
+                </Split>
+            </div>
+        </Split>
         );
     }
 }
 
 ReactDOM.render(
     <Game />,
-    document.getElementById('test3')
+    document.getElementById('react-container')
 );
 
 superagent.get('/jscad_diagram').then((res, err) => {
@@ -58,5 +123,3 @@ superagent.get('/jscad_diagram').then((res, err) => {
         viewer(document.getElementById('jscad'), res.body, true, true);
     }
 })
-
-document.body.appendChild(component());
