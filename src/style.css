@@ -16,8 +16,22 @@ body {
 
 #react-container {
     height: 100%;
+    overflow: hidden;
 }
 
 .full-height {
     height: 100%;
+}
+
+.full-height-minus-navbar {
+    height: calc(100% - 59px) !important;
+}
+
+.scrollable {
+    max-height: 100%;
+    overflow: scroll;
+}
+
+.dropdown-menu {
+    min-width: 0 !important;
 }
