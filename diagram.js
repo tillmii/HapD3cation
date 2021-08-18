@@ -546,6 +546,7 @@ console.log(texts.length);
 }
 
 function assembly (data) {
+    // console.dir(data);
     let size_x = data.bars.length;
     let size_y = data.bars[0].length;
     
@@ -662,4 +663,4 @@ return subtract(
   */
 }
 
-module.exports = { main }
+module.exports = { main, assembly }
