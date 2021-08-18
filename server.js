@@ -1,6 +1,8 @@
 const diagram = require("./diagram.js")
+const compiler = require('./compiler.js')
 
 const express = require('express');
+var bodyParser = require('body-parser')
 const path = require('path');
 
 const app = express();
@@ -9,6 +11,8 @@ const port = process.env.PORT || 8080;
 app.use('/public', express.static(__dirname + '/public'));
 app.use('/dist', express.static(__dirname + '/dist'));
 app.use('/OpenJSCAD.org', express.static(__dirname + '/OpenJSCAD.org'));
+
+app.use(bodyParser.json());
 
 // sendFile will go here
 app.get('/', function(req, res) {
@@ -44,8 +48,12 @@ app.get('/beschreibung', function(req, res) {
 app.get('/jscad', function(req, res) {
     res.sendFile(path.join(__dirname, '/lib/html/jscad_hapd3cation.html'));
 });
-app.get('/jscad_diagram', function(req, res) {
-    res.json(diagram.main());
+app.post('/jscad_diagram', function(req, res) {
+    // console.dir(req);
+    // console.dir(req.body);
+    let jscadSpec = compiler.compile(req.body);
+
+    res.json(diagram.assembly(jscadSpec));
 });
 app.get('/webpack', function(req, res) {
     res.sendFile(path.join(__dirname, '/dist/index.html'));
