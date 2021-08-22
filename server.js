@@ -55,7 +55,7 @@ app.post('/jscad_diagram', function(req, res) {
 
     res.json(diagram.assembly(jscadSpec));
 });
-app.get('/webpack', function(req, res) {
+app.get('/editor', function(req, res) {
     res.sendFile(path.join(__dirname, '/dist/index.html'));
 });
 
