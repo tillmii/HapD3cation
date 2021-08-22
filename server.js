@@ -1,5 +1,6 @@
 const diagram = require("./diagram.js")
 const compiler = require('./compiler.js')
+const serializer = require('./amf-serializer.js')
 
 const express = require('express');
 var bodyParser = require('body-parser')
@@ -12,7 +13,7 @@ app.use('/public', express.static(__dirname + '/public'));
 app.use('/dist', express.static(__dirname + '/dist'));
 app.use('/OpenJSCAD.org', express.static(__dirname + '/OpenJSCAD.org'));
 
-app.use(bodyParser.json());
+app.use(bodyParser.json({limit: '50mb'}));
 
 // sendFile will go here
 app.get('/', function(req, res) {
@@ -57,6 +58,18 @@ app.post('/jscad_diagram', function(req, res) {
 });
 app.get('/editor', function(req, res) {
     res.sendFile(path.join(__dirname, '/dist/index.html'));
+});
+app.post('/download', function(req, res){
+    serializer.serialize(req.body);
+    // const file = `${__dirname}/tmp/hapd3cation.amf`;
+    // res.download(file); // Set disposition and send it.
+    res.sendStatus(200);
+});
+app.get('/download/:hapd3cationId', function(req, res){
+    // serializer.serialize(req.body);
+    let tmpFilePath = '/tmp/hapd3cation' + req.params.hapd3cationId + '.amf'
+    const file = path.join(__dirname, tmpFilePath);
+    res.download(file); // Set disposition and send it.
 });
 
 app.listen(port);

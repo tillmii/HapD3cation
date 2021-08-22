@@ -22,6 +22,7 @@ import Table from 'react-bootstrap/Table'
 
 import {FontAwesomeIcon} from '@fortawesome/react-fontawesome';
 import {faPlay} from '@fortawesome/free-solid-svg-icons';
+import {faDownload} from '@fortawesome/free-solid-svg-icons';
 
 import {CsvToHtmlTable} from 'react-csv-to-table';
 
@@ -48,6 +49,11 @@ class NavbarComponent extends React.Component {
                             <NavDropdown title="Examples" id="basic-nav-dropdown">
                                 <NavDropdown.Item href="#barchart">Barchart</NavDropdown.Item>
                             </NavDropdown>
+                            <DownloadButton
+                                enableDownload={this.props.enableDownload}
+                                preparingDownload={this.props.preparingDownload}
+                                handleClickDownloadButton={this.props.handleClickDownloadButton}
+                            />
                             <LoadingButton
                                 viewerIsLoading={this.props.viewerIsLoading}
                                 handleClickRenderButton={this.props.handleClickRenderButton}
@@ -67,16 +73,36 @@ class LoadingButton extends React.Component {
         }
     }
 
-
-
     render() {
         return (
             <Button
+                className={'mx-1'}
                 variant="outline-success"
                 disabled={this.props.viewerIsLoading}
                 onClick={!this.props.viewerIsLoading ? this.props.handleClickRenderButton : null}
             >
                 {this.props.viewerIsLoading ? 'Loading…' : <FontAwesomeIcon icon={faPlay}/>}
+            </Button>
+        );
+    }
+}
+
+class DownloadButton extends React.Component {
+    constructor(props) {
+        super(props);
+        this.state = {
+        }
+    }
+
+    render() {
+        return (
+            <Button
+                className={'mx-1'}
+                variant="outline-primary"
+                disabled={!this.props.enableDownload || this.props.preparingDownload}
+                onClick={!this.props.preparingDownload ? this.props.handleClickDownloadButton : null}
+            >
+                {this.props.preparingDownload ? 'Preparing Download…' : <FontAwesomeIcon icon={faDownload}/>}
             </Button>
         );
     }
@@ -160,8 +186,11 @@ class Game extends React.Component {
     constructor(props) {
         super(props);
         this.state = {
+            renderedDiagram: null,
             viewerIsLoading: false,
-            specification: JSON.stringify(exampleSpecification),
+            enableDownload: false,
+            preparingDownload: false,
+            specification: JSON.stringify(exampleSpecification, null, 4),
         }
         this.handleClickRenderButton = this.handleClickRenderButton.bind(this);
     }
@@ -174,6 +203,7 @@ class Game extends React.Component {
 
     handleClickRenderButton = () => {
         this.setState({
+            enableDownload: false,
             viewerIsLoading: true,
         })
         // console.log(this.state.specification);
@@ -189,8 +219,42 @@ class Game extends React.Component {
                     console.log("Error fetching the diagram");
                     console.log(err);
                 } else {
+                    this.setState({
+                        renderedDiagram: res.body,
+                        enableDownload: true,
+                    })
                     console.log("Received the diagram");
                     viewer(document.getElementById('jscad'), res.body, true, true);
+                }
+            })
+    }
+
+    handleClickDownloadButton = () => {
+        this.setState({
+            preparingDownload: true,
+            viewerIsLoading: true,
+        })
+        superagent
+            .post('download')
+            .set('Content-Type', 'application/json')
+            .send(this.state.renderedDiagram)
+            .then((res, err) => {
+                this.setState({
+                    preparingDownload: false,
+                    viewerIsLoading: false,
+                })
+                if (err) {
+                    console.log("Error preparing the download");
+                    console.log(err);
+                } else {
+                    this.setState({
+                        // renderedDiagram: res.body,
+                        // enableDownload: true,
+                    })
+                    console.log("Successfully prepared the download");
+                    let hapd3cationId = this.state.renderedDiagram[0].id;
+                    let downloadPath = '/download/' + hapd3cationId;
+                    window.open(downloadPath);
                 }
             })
     }
@@ -201,6 +265,9 @@ class Game extends React.Component {
                 <NavbarComponent
                     viewerIsLoading={this.state.viewerIsLoading}
                     handleClickRenderButton={this.handleClickRenderButton}
+                    enableDownload={this.state.enableDownload}
+                    preparingDownload={this.state.preparingDownload}
+                    handleClickDownloadButton={this.handleClickDownloadButton}
                 />
                 <Split
                     className="split full-height-minus-navbar"
