@@ -55,6 +55,7 @@ class NavbarComponent extends React.Component {
                                 handleClickDownloadButton={this.props.handleClickDownloadButton}
                             />
                             <LoadingButton
+                                enableRenderButton={this.props.enableRenderButton}
                                 viewerIsLoading={this.props.viewerIsLoading}
                                 handleClickRenderButton={this.props.handleClickRenderButton}
                             />
@@ -78,7 +79,7 @@ class LoadingButton extends React.Component {
             <Button
                 className={'mx-1'}
                 variant="outline-success"
-                disabled={this.props.viewerIsLoading}
+                disabled={!this.props.enableRenderButton || this.props.viewerIsLoading}
                 onClick={!this.props.viewerIsLoading ? this.props.handleClickRenderButton : null}
             >
                 {this.props.viewerIsLoading ? 'Loading…' : <FontAwesomeIcon icon={faPlay}/>}
@@ -187,6 +188,7 @@ class Game extends React.Component {
         super(props);
         this.state = {
             renderedDiagram: null,
+            enableRenderButton: true,
             viewerIsLoading: false,
             enableDownload: false,
             preparingDownload: false,
@@ -232,7 +234,7 @@ class Game extends React.Component {
     handleClickDownloadButton = () => {
         this.setState({
             preparingDownload: true,
-            viewerIsLoading: true,
+            enableRenderButton: false,
         })
         superagent
             .post('download')
@@ -241,7 +243,7 @@ class Game extends React.Component {
             .then((res, err) => {
                 this.setState({
                     preparingDownload: false,
-                    viewerIsLoading: false,
+                    enableRenderButton: true,
                 })
                 if (err) {
                     console.log("Error preparing the download");
@@ -263,6 +265,7 @@ class Game extends React.Component {
         return (
             <div className="full-height">
                 <NavbarComponent
+                    enableRenderButton={this.state.enableRenderButton}
                     viewerIsLoading={this.state.viewerIsLoading}
                     handleClickRenderButton={this.handleClickRenderButton}
                     enableDownload={this.state.enableDownload}
