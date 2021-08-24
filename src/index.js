@@ -118,15 +118,16 @@ class EditorComponent extends React.Component {
         }
     }
 
-    // editorWillMount(monaco) {
-    //     monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
-    //         validate: true,
-    //         schemas: [{
-    //             uri: "https://hapd3cation.tillmii.de/public/hapd3cationSchema.json",
-    //             fileMatch: ['*'],
-    //         }]
-    //     });
-    // }
+    editorWillMount(monaco) {
+        monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+            validate: true,
+            enableSchemaRequest: true,
+            // schemas: [{
+            //     uri: "https://hapd3cation.tillmii.de/public/hapd3cationSchema.json",
+            //     fileMatch: ['*'],
+            // }]
+        });
+    }
 
     editorDidMount(editor, monaco) {
         console.log('editorDidMount', editor);
@@ -140,7 +141,6 @@ class EditorComponent extends React.Component {
     }
 
     render() {
-        const code = this.state.code;
         const options = {
             language: "json",
             minimap: {
@@ -148,12 +148,12 @@ class EditorComponent extends React.Component {
             },
             automaticLayout: true,
             wordWrap: "on",
-            setDiagnosticsOptions: {
-                validate: true,
-                allowComments: false,
-                schemas: [],
-                enableSchemaRequest: true
-            }
+            // setDiagnosticsOptions: {
+            //     validate: true,
+            //     allowComments: false,
+            //     schemas: [],
+            //     enableSchemaRequest: true
+            // }
         };
         return (
             <MonacoEditor
@@ -163,7 +163,7 @@ class EditorComponent extends React.Component {
                 options={options}
                 onChange={this.props.onChange}
                 editorDidMount={this.editorDidMount}
-                // editorWillMount={this.editorWillMount}
+                editorWillMount={this.editorWillMount}
             />
         );
     }

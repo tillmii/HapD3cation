@@ -3,8 +3,11 @@ const compiler = require('./compiler.js')
 const serializer = require('./amf-serializer.js')
 
 const express = require('express');
-var bodyParser = require('body-parser')
+const bodyParser = require('body-parser')
+const cors = require('cors')
 const path = require('path');
+
+const hapd3cation_schema = require('./hapd3cationSchema.json');
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -12,6 +15,7 @@ const port = process.env.PORT || 8080;
 app.use('/public', express.static(__dirname + '/public'));
 app.use('/dist', express.static(__dirname + '/dist'));
 app.use('/OpenJSCAD.org', express.static(__dirname + '/OpenJSCAD.org'));
+app.use(cors());
 
 app.use(bodyParser.json({limit: '50mb'}));
 
@@ -70,6 +74,10 @@ app.get('/download/:hapd3cationId', function(req, res){
     let tmpFilePath = '/tmp/hapd3cation' + req.params.hapd3cationId + '.amf'
     const file = path.join(__dirname, tmpFilePath);
     res.download(file); // Set disposition and send it.
+});
+app.get('/hapd3cation-schema', function(req, res) {
+    res.h
+    res.jsonp(hapd3cation_schema);
 });
 
 app.listen(port);
