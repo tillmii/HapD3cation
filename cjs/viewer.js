@@ -25,34 +25,34 @@ let zoomToFit = false
 let updateView = true
 
 // setup demo solids data
-const demoSolids = (parameters) => {
-    const {colorize} = require('@jscad/modeling').colors
-    const {cube, cuboid, line, sphere, star} = require('@jscad/modeling').primitives
-    const {intersect, subtract} = require('@jscad/modeling').booleans
+// const demoSolids = (parameters) => {
+//     const {colorize} = require('@jscad/modeling').colors
+//     const {cube, cuboid, line, sphere, star} = require('@jscad/modeling').primitives
+//     const {intersect, subtract} = require('@jscad/modeling').booleans
+//
+//     const logo = [
+//         colorize([1.0, 0.4, 1.0], subtract(
+//             cube({size: 300}),
+//             sphere({radius: 200})
+//         )),
+//         colorize([1.0, 1.0, 0], intersect(
+//             sphere({radius: 130}),
+//             cube({size: 210})
+//         ))
+//     ]
+//
+//     const transpCube = colorize([1, 0, 0, 0.75], cuboid({size: [100 * parameters.scale, 100, 210 + (200 * parameters.scale)]}))
+//     const star2D = star({vertices: 8, innerRadius: 150, outerRadius: 200})
+//     const line2D = colorize([1.0, 0, 0], line([[220, 220], [-220, 220], [-220, -220], [220, -220], [220, 220]]))
+//
+//     return [transpCube, line2D, star2D, ...logo]
+// }
 
-    const logo = [
-        colorize([1.0, 0.4, 1.0], subtract(
-            cube({size: 300}),
-            sphere({radius: 200})
-        )),
-        colorize([1.0, 1.0, 0], intersect(
-            sphere({radius: 130}),
-            cube({size: 210})
-        ))
-    ]
-
-    const transpCube = colorize([1, 0, 0, 0.75], cuboid({size: [100 * parameters.scale, 100, 210 + (200 * parameters.scale)]}))
-    const star2D = star({vertices: 8, innerRadius: 150, outerRadius: 200})
-    const line2D = colorize([1.0, 0, 0], line([[220, 220], [-220, 220], [-220, -220], [220, -220], [220, 220]]))
-
-    return [transpCube, line2D, star2D, ...logo]
-}
-
-const demoCube = (parameters) => {
-    const {cube, cuboid, line, sphere, star} = require('@jscad/modeling').primitives
-
-    return cube({ size: 100 })
-}
+// const demoCube = (parameters) => {
+//     const {cube, cuboid, line, sphere, star} = require('@jscad/modeling').primitives
+//
+//     return cube({ size: 100 })
+// }
 
 
 const grid = {
@@ -74,7 +74,7 @@ const grid = {
 const axes = {
     visuals: {
         drawCmd: 'drawAxis',
-        show: true
+        show: false
     }
     // size: 300 // old
 }
@@ -313,8 +313,12 @@ const compareSolids = (current, previous) => {
     return current.reduce((acc, id, i) => acc && current[i].id === previous[i].id, true)
 }
 
+const setUpdateView = () => {
+    updateView = true;
+}
+
 
 // viewer(demoSolids({scale: 1}), true, false);
 // viewer(demoCube({scale: 1}), true, true);
 
-module.exports = viewer;
+module.exports = { viewer, setUpdateView };

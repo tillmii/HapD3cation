@@ -226,7 +226,7 @@ class Game extends React.Component {
                         enableDownload: true,
                     })
                     console.log("Received the diagram");
-                    viewer(document.getElementById('jscad'), res.body, true, true);
+                    viewer.viewer(document.getElementById('jscad'), res.body, true, true);
                 }
             })
     }
@@ -261,6 +261,10 @@ class Game extends React.Component {
             })
     }
 
+    updateViewer = () => {
+        viewer.setUpdateView();
+    }
+
     render() {
         return (
             <div className="full-height">
@@ -274,6 +278,9 @@ class Game extends React.Component {
                 />
                 <Split
                     className="split full-height-minus-navbar"
+                    onDragStart={this.updateViewer}
+                    onDrag={this.updateViewer}
+                    onDragEnd={this.updateViewer}
                 >
                     <div
                         className="full-height"
@@ -286,6 +293,9 @@ class Game extends React.Component {
                         <Split
                             className="full-height"
                             direction="vertical"
+                            onDragStart={this.updateViewer}
+                            onDrag={this.updateViewer}
+                            onDragEnd={this.updateViewer}
                         >
                             <div id="jscad">
                             </div>
