@@ -91,6 +91,24 @@ function compile(specification) {
     jscadSpec.legend_x = xAxisValues;
     jscadSpec.legend_y = yAxisValues;
 
+    console.log(JSON.stringify(jsonSpec, null, 4));
+
+    jscadSpec.external_legend = {};
+    jscadSpec.external_legend.title = jsonSpec.title;
+    jscadSpec.external_legend.list = [];
+
+    roughnessValues.forEach((roughnessItem, roughnessIndex, roughnessArray) => {
+        jscadSpec.external_legend.list.push(
+            {
+                texture: {
+                    type: "roughness",
+                    value: 2 + roughnessIndex * 2
+                },
+                label: roughnessItem
+            }
+        );
+    });
+
     jscadSpec.bars = []
     xAxisValues.forEach((xItem, xIndex, xArray) => {
         jscadSpec.bars.push([]);
@@ -104,7 +122,7 @@ function compile(specification) {
                             "height": Math.round(dataItem[zAxisFieldPos] * factor),
                             "texture": {
                                 "type": "roughness",
-                                "value": roughnessIndex + 3,
+                                "value": 2 + roughnessIndex * 2,
                             }
                         }
                         barSpec.push(barSegmentSpec);

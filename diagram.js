@@ -1,8 +1,19 @@
-const { cube, cuboid, polygon, cylinder, polyhedron } = require('@jscad/modeling').primitives
-const { center, rotate, translate, mirror, mirrorX, mirrorY, mirrorZ,rotateX,rotateY, rotateZ } = require('@jscad/modeling').transforms
-const { union, subtract } = require('@jscad/modeling').booleans
-const { extrudeLinear, extrudeFromSlices } = require('@jscad/modeling').extrusions
-const { create } = require('@jscad/modeling').geometries.geom3;
+const {cube, cuboid, polygon, cylinder, polyhedron} = require('@jscad/modeling').primitives
+const {
+    center,
+    rotate,
+    translate,
+    mirror,
+    mirrorX,
+    mirrorY,
+    mirrorZ,
+    rotateX,
+    rotateY,
+    rotateZ
+} = require('@jscad/modeling').transforms
+const {union, subtract} = require('@jscad/modeling').booleans
+const {extrudeLinear, extrudeFromSlices} = require('@jscad/modeling').extrusions
+const {create} = require('@jscad/modeling').geometries.geom3;
 
 const modeling = require('@jscad/modeling')
 
@@ -48,7 +59,18 @@ let braille = {
     'W': 0b10111,
     'X': 0b101101,
     'Y': 0b101111,
-    'Z': 0b101011
+    'Z': 0b101011,
+    '#': 0b001111,
+    '0': 0b001011,
+    '1': 0b010000,
+    '2': 0b011000,
+    '3': 0b010010,
+    '4': 0b010011,
+    '5': 0b010001,
+    '6': 0b011010,
+    '7': 0b011011,
+    '8': 0b011001,
+    '9': 0b001010
 }
 
 let diagram_data = {
@@ -61,158 +83,242 @@ let diagram_data = {
         "Hallo",
         "Till"
     ],
+    external_legend: {
+        title: 'Test',
+        list: [
+            {
+                texture: {
+                    type: "roughness",
+                    value: 1
+                },
+                label: 'a'
+            },
+            {
+                texture: {
+                    type: "roughness",
+                    value: 3
+                },
+                label: 'cdefghi'
+            },
+            {
+                texture: {
+                    type: "roughness",
+                    value: 2
+                },
+                label: 'b'
+            }
+        ]
+    },
     bars: [ // [x][y]
         [
             [
-                {height:20,
-                texture:{
-                    type: "roughness",
-                    value: 1
-                }},
-                {height: 30,
-                texture:{
-                    type: "roughness",
-                    value: 5
-                }},
-                {height:10,
-                texture:{
-                    type: "roughness",
-                    value: 2
-                }},
-                {height:20,
-                texture:{
-                    type: "roughness",
-                    value: 4
-                }}
-              
-          ],
-          [
-            {height:10,
-            texture:{
-                type: "roughness",
-                value: 1
-            }},
-            {height: 25,
-            texture:{
-                type: "roughness",
-                value: 5
-            }},
-            {height:20,
-            texture:{
-                type: "roughness",
-                value: 2
-            }},
-            {height:15,
-            texture:{
-                type: "roughness",
-                value: 4
-            }}
-          
-      ],
+                {
+                    height: 20,
+                    texture: {
+                        type: "roughness",
+                        value: 1
+                    }
+                },
+                {
+                    height: 30,
+                    texture: {
+                        type: "roughness",
+                        value: 5
+                    }
+                },
+                {
+                    height: 10,
+                    texture: {
+                        type: "roughness",
+                        value: 2
+                    }
+                },
+                {
+                    height: 20,
+                    texture: {
+                        type: "roughness",
+                        value: 4
+                    }
+                }
+
+            ],
+            [
+                {
+                    height: 10,
+                    texture: {
+                        type: "roughness",
+                        value: 1
+                    }
+                },
+                {
+                    height: 25,
+                    texture: {
+                        type: "roughness",
+                        value: 5
+                    }
+                },
+                {
+                    height: 20,
+                    texture: {
+                        type: "roughness",
+                        value: 2
+                    }
+                },
+                {
+                    height: 15,
+                    texture: {
+                        type: "roughness",
+                        value: 4
+                    }
+                }
+
+            ],
         ],
         [
             [
-                {height:10,
-                texture:{
-                    type: "roughness",
-                    value: 1
-                }},
-                {height: 5,
-                texture:{
-                    type: "roughness",
-                    value: 5
-                }},
-                {height:42,
-                texture:{
-                    type: "roughness",
-                    value: 2
-                }},
-                {height:7,
-                texture:{
-                    type: "roughness",
-                    value: 4
-                }}
-              
-          ],
-          [
-            {height:28,
-            texture:{
-                type: "roughness",
-                value: 1
-            }},
-            {height: 21,
-            texture:{
-                type: "roughness",
-                value: 5
-            }},
-            {height:5,
-            texture:{
-                type: "roughness",
-                value: 2
-            }},
-            {height:14,
-            texture:{
-                type: "roughness",
-                value: 4
-            }}
-          
-      ],
+                {
+                    height: 10,
+                    texture: {
+                        type: "roughness",
+                        value: 1
+                    }
+                },
+                {
+                    height: 5,
+                    texture: {
+                        type: "roughness",
+                        value: 5
+                    }
+                },
+                {
+                    height: 42,
+                    texture: {
+                        type: "roughness",
+                        value: 2
+                    }
+                },
+                {
+                    height: 7,
+                    texture: {
+                        type: "roughness",
+                        value: 4
+                    }
+                }
+
+            ],
+            [
+                {
+                    height: 28,
+                    texture: {
+                        type: "roughness",
+                        value: 1
+                    }
+                },
+                {
+                    height: 21,
+                    texture: {
+                        type: "roughness",
+                        value: 5
+                    }
+                },
+                {
+                    height: 5,
+                    texture: {
+                        type: "roughness",
+                        value: 2
+                    }
+                },
+                {
+                    height: 14,
+                    texture: {
+                        type: "roughness",
+                        value: 4
+                    }
+                }
+
+            ],
         ],
         [
             [
-                {height:5,
-                texture:{
-                    type: "roughness",
-                    value: 1
-                }},
-                {height: 47,
-                texture:{
-                    type: "roughness",
-                    value: 5
-                }},
-                {height:7,
-                texture:{
-                    type: "roughness",
-                    value: 2
-                }},
-                {height:8,
-                texture:{
-                    type: "roughness",
-                    value: 4
-                }}
-              
-          ],
-          [
-            {height:28,
-            texture:{
-                type: "roughness",
-                value: 1
-            }},
-            {height: 16,
-            texture:{
-                type: "roughness",
-                value: 5
-            }},
-            {height:17,
-            texture:{
-                type: "roughness",
-                value: 2
-            }},
-            {height:25,
-            texture:{
-                type: "roughness",
-                value: 4
-            }}
-          
-      ],
+                {
+                    height: 5,
+                    texture: {
+                        type: "roughness",
+                        value: 1
+                    }
+                },
+                {
+                    height: 47,
+                    texture: {
+                        type: "roughness",
+                        value: 5
+                    }
+                },
+                {
+                    height: 7,
+                    texture: {
+                        type: "roughness",
+                        value: 2
+                    }
+                },
+                {
+                    height: 8,
+                    texture: {
+                        type: "roughness",
+                        value: 4
+                    }
+                }
+
+            ],
+            [
+                {
+                    height: 28,
+                    texture: {
+                        type: "roughness",
+                        value: 1
+                    }
+                },
+                {
+                    height: 16,
+                    texture: {
+                        type: "roughness",
+                        value: 5
+                    }
+                },
+                {
+                    height: 17,
+                    texture: {
+                        type: "roughness",
+                        value: 2
+                    }
+                },
+                {
+                    height: 25,
+                    texture: {
+                        type: "roughness",
+                        value: 4
+                    }
+                }
+
+            ],
         ]
     ],
     indicator_dist: 10,
-    base_size: {x:3,y:2}
+    base_size: {x: 3, y: 2}
 }
 
 
-
+/**
+ * Generate a joint pair in the origin
+ * @param {boolean} socket   True for generating a socket (slightly larger) or false for generating a plug
+ * @param {number} joint_spacing   Distance in mm fom one to the other joint, center to center
+ * @param {number} joint_width   Width on the small side of the joint
+ * @param {number} joint_depth   Depth of the joint
+ * @param {number} joint_height   Height of the joint
+ * @param {number} joint_tolerance   Tolerance added if generating a socket
+ *
+ * @return   CSG - pair of joints in the origin
+ */
 function joint(
     socket = false,
     joint_spacing = 30,
@@ -220,447 +326,678 @@ function joint(
     joint_depth = 5,
     joint_height = 3,
     joint_tolerance = tolerance) {
-        
-        let height = socket ? joint_height+joint_tolerance : joint_height;
-        let depth = socket ? joint_depth+joint_tolerance : joint_depth;
-        let width = socket ? joint_width+joint_tolerance : joint_width;
 
-        let obj = translate([-depth-width/2,-depth,0],
-            polyhedron({
-            points: [[0,0,0], [depth,depth,0], [depth+width,depth,0], [2*depth+width,0,0],
-                     [0,0,height], [depth,depth,height], [depth+width,depth,height], [2*depth+width,0,height]],
-            faces: [[0,1,2],[0,2,3],[6,5,4],[7,6,4],
-                    [4,1,0],[5,1,4],[5,2,1],[6,2,5],
-                    [6,3,2],[6,7,3],[4,0,3],[7,4,3]],
+    let height = socket ? joint_height + joint_tolerance : joint_height;
+    let depth = socket ? joint_depth + joint_tolerance : joint_depth;
+    let width = socket ? joint_width + joint_tolerance : joint_width;
+
+    let obj = translate([-depth - width / 2, -depth, 0],
+        polyhedron({
+            points: [[0, 0, 0], [depth, depth, 0], [depth + width, depth, 0], [2 * depth + width, 0, 0],
+                [0, 0, height], [depth, depth, height], [depth + width, depth, height], [2 * depth + width, 0, height]],
+            faces: [[0, 1, 2], [0, 2, 3], [6, 5, 4], [7, 6, 4],
+                [4, 1, 0], [5, 1, 4], [5, 2, 1], [6, 2, 5],
+                [6, 3, 2], [6, 7, 3], [4, 0, 3], [7, 4, 3]],
             orientation: 'outward'
         }))
 
 
-        // let obj = translate([-depth-width/2,-depth,0],
-        //     (extrudeLinear({height: height},
-        //         polygon({points: [
-        //             [0,0],
-        //             [depth,depth],
-        //             [depth+width,depth],
-        //             [2*depth+width,0]
-        //         ]})
-        //     )
-        //     ));
+    // let obj = translate([-depth-width/2,-depth,0],
+    //     (extrudeLinear({height: height},
+    //         polygon({points: [
+    //             [0,0],
+    //             [depth,depth],
+    //             [depth+width,depth],
+    //             [2*depth+width,0]
+    //         ]})
+    //     )
+    //     ));
 
-            console.log((obj));
-            console.log(modeling.geometries.geom3.isA(obj));
-        
-        return obj
-            
-        
-        
+    console.log((obj));
+    console.log(modeling.geometries.geom3.isA(obj));
+
+    return obj
+
+
 }
 
-function base(base_size_x=4, base_size_y=2) {
+
+/**
+ * Generate a base plate for a bar diagram with joint plugs on the right and sockets on the left and bottom side
+ * @param {number} base_size_x   Number of bar slots in x direction
+ * @param {number} base_size_y   Number of bar slots in y direction
+ *
+ * @return   CSG - base plate, bottom left corner is in the origin
+ */
+function base(base_size_x = 4, base_size_y = 2) {
 
 
-
-
-    
-    let base_x = base_size_x*(bar_spacing+bar_width);
-    let base_y = base_size_y*(bar_spacing+bar_width);
-    console.log('base_x='+base_x+'\nbase_y='+base_y);
-    console.log('base_x/2-joint_spacing/2='+(base_x/2-joint_spacing/2));
+    let base_x = base_size_x * (bar_spacing + bar_width);
+    let base_y = base_size_y * (bar_spacing + bar_width);
+    console.log('base_x=' + base_x + '\nbase_y=' + base_y);
+    console.log('base_x/2-joint_spacing/2=' + (base_x / 2 - joint_spacing / 2));
     let socket_holes = [];
-    
-    console.log("bar_socket_width="+bar_socket_width+" | bar_socket_height="+bar_socket_height);
 
-    for (let x = 0;x<base_size_x;x++ ) {
-            for (let y = 0; y<base_size_y;y++) {
-                console.log("socket hole - x:"+x+" | y:"+y);
-                socket_holes.push(
-                    translate([
-                        (bar_spacing+bar_width)/2+x*(bar_spacing+bar_width),
-                        (bar_spacing+bar_width)/2+y*(bar_spacing+bar_width),
-                        base_thickness-bar_socket_height
+    console.log("bar_socket_width=" + bar_socket_width + " | bar_socket_height=" + bar_socket_height);
+
+    for (let x = 0; x < base_size_x; x++) {
+        for (let y = 0; y < base_size_y; y++) {
+            console.log("socket hole - x:" + x + " | y:" + y);
+            socket_holes.push(
+                translate([
+                        (bar_spacing + bar_width) / 2 + x * (bar_spacing + bar_width),
+                        (bar_spacing + bar_width) / 2 + y * (bar_spacing + bar_width),
+                        base_thickness - bar_socket_height
                     ],
-                        
-                            cuboid({
-                                size: [bar_socket_width,bar_socket_width,bar_socket_height],
-                                center: [0,0,bar_socket_height/2]
-                            })
-                        
-                    )
-                );
+
+                    cuboid({
+                        size: [bar_socket_width, bar_socket_width, bar_socket_height],
+                        center: [0, 0, bar_socket_height / 2]
+                    })
+                )
+            );
         }
     }
-    
-    
+
+
     console.log("Return base");
-    return  subtract(
-                union(
-                    cuboid({size:[base_x,base_y,base_thickness], center: [base_x/2,base_y/2,base_thickness/2]}),
+    return subtract(
+        union(
+            cuboid({size: [base_x, base_y, base_thickness], center: [base_x / 2, base_y / 2, base_thickness / 2]}),
 
-                    translate([base_x,base_y/2-joint_spacing/2,0], 
-                        rotateZ(Math.PI/2, 
-                            joint()
-                    )),
-                    
-
-                    translate([base_x,base_y/2+joint_spacing/2,0], 
-                        rotateZ(Math.PI/2, 
-                            joint()
-                    ))
-                
-                ),
-
-                socket_holes,
-
-                translate([0,base_y/2-joint_spacing/2,0], 
-                    rotateZ(Math.PI/2, 
-                        joint(true)
+            translate([base_x, base_y / 2 - joint_spacing / 2, 0],
+                rotateZ(Math.PI / 2,
+                    joint()
                 )),
 
-                translate([0,base_y/2+joint_spacing/2,0], 
-                    rotateZ(Math.PI/2, 
-                        joint(true)
-                )),
 
-                mirrorY(
-                    translate([base_x/2-joint_spacing/2,0,0], 
-                        joint(true)
-                )),
-                
-                mirrorY(
-                    translate([base_x/2+joint_spacing/2,0,0], 
-                        joint(true)
+            translate([base_x, base_y / 2 + joint_spacing / 2, 0],
+                rotateZ(Math.PI / 2,
+                    joint()
                 ))
-    
-            )
-            
+        ),
 
-    
-    
-    
-    
-        
-    
+        socket_holes,
+
+        translate([0, base_y / 2 - joint_spacing / 2, 0],
+            rotateZ(Math.PI / 2,
+                joint(true)
+            )),
+
+        translate([0, base_y / 2 + joint_spacing / 2, 0],
+            rotateZ(Math.PI / 2,
+                joint(true)
+            )),
+
+        mirrorY(
+            translate([base_x / 2 - joint_spacing / 2, 0, 0],
+                joint(true)
+            )),
+
+        mirrorY(
+            translate([base_x / 2 + joint_spacing / 2, 0, 0],
+                joint(true)
+            ))
+    )
+
+
 }
 
+/**
+ * Defines type and density of a texture
+ * @typedef {Object} texture
+ * @property {string} type   Type of the texture
+ * @property {number} value   Texture specific value (density)
+ */
+
+/**
+ * Generate texture for a bar in a given type and size
+ * @param {{type: string, value: number}} texture   Object defining the texture to generate
+ * @param {number} height   Height of bar segment
+ *
+ * @return   CSG - texture
+ */
 function generate_texture(texture, height) {
     let texture_objects = [];
     switch (texture.type) {
 
         case "roughness":
 
-            let dot_dist = 1+texture.value*0.5;
-            let rows = Math.floor(height/dot_dist);
-            let cols = Math.floor(bar_width/dot_dist);
+            let dot_dist = 1 + texture.value * 0.5;
+            let rows = Math.floor(height / dot_dist);
+            let cols = Math.floor(bar_width / dot_dist);
 
-            let border_x = (height-rows*dot_dist)*0.5;
-            let border_y = (bar_width-cols*dot_dist)*0.5;
+            let border_x = (height - rows * dot_dist) * 0.5;
+            let border_y = (bar_width - cols * dot_dist) * 0.5;
 
-            for (let r=0;r<rows;r++) {
-                for (let c=0;c<(cols-r%2);c++) {
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < (cols - r % 2); c++) {
                     texture_objects.push(
-                        translate([border_x+dot_dist/2+r*dot_dist,border_y+dot_dist/2+(r%2*dot_dist/2+c*dot_dist)],
-                            cylinder({radius:0.4, height:0.2})
-                    ))
-                } 
+                        translate([border_x + dot_dist / 2 + r * dot_dist, border_y + dot_dist / 2 + (r % 2 * dot_dist / 2 + c * dot_dist)],
+                            cylinder({radius: 0.4, height: 0.2})
+                        ))
+                }
             }
 
-        break;
+            break;
     }
     return union(texture_objects)
 }
 
+/**
+ * Generates a divider
+ *
+ * @return   CSG - divider
+ */
 function divider() {
     return union(
-        translate([0,0,0.5],
-            rotateX(-Math.PI/2,
-                cylinder({radius:0.5,height:bar_width,center:[0,0,bar_width/2]})
-        )),
-            translate([-0.5,0,0],
-                cuboid({size:[1,bar_width,0.5],
-                        center:[0.5,bar_width/2,0.25]})
-            
+        translate([0, 0, 0.5],
+            rotateX(-Math.PI / 2,
+                cylinder({radius: 0.5, height: bar_width, center: [0, 0, bar_width / 2]})
+            )),
+        translate([-0.5, 0, 0],
+            cuboid({
+                size: [1, bar_width, 0.5],
+                center: [0.5, bar_width / 2, 0.25]
+            })
         )
     )
 }
 
+/**
+ * Generates a indicator
+ *
+ * @return   CSG - indicator
+ */
 function indicator() {
-    return rotateZ(Math.PI/4,
-        cuboid({size:[1,1,bar_width+5],
-                center:[0,0,(bar_width+5)/2]}))
+    return rotateZ(Math.PI / 4,
+        cuboid({
+            size: [1, 1, bar_width + 5],
+            center: [0, 0, (bar_width + 5) / 2]
+        }))
 }
 
-function bar(params,indicator_dist=10,center=false) {
+/**
+ * Defines size and texture of a bar segment
+ * @typedef {Object} bar_segment
+ * @property {number} height   Height of the segment
+ * @property {texture} texture   Definition of the {@link texture}
+ */
+
+/**
+ * Generate bar with given segments
+ * @param {...bar_segment} params   Array of {@link bar_segment}
+ * @param {number} indicator_dist   Distance of the indicators in mm
+ * @param {boolean} center   Centers the bar in the origin
+ *
+ * @return   CSG - texture
+ */
+function bar(params, indicator_dist = 10, center = false) {
     let bar_object;
 
-    let socket_width = bar_socket_width-bar_socket_tolerance;
-    let socket_height = bar_socket_height-bar_socket_tolerance;
-    
+    let socket_width = bar_socket_width - bar_socket_tolerance;
+    let socket_height = bar_socket_height - bar_socket_tolerance;
+
     let segments = [];
-    let bar_height=0;
-    for (let i=0;i<params.length;i++) {
+    let bar_height = 0;
+    for (let i = 0; i < params.length; i++) {
 
         let param = params[i];
-        console.log("height: " + param.height +
-        "\nbar_height: "+bar_height);
-        //let divider = bar_height ? (translate([bar_height,0,bar_width], divider())):[]
+        if (param.height > 0) {
+            console.log("height: " + param.height +
+                "\nbar_height: " + bar_height);
+            //let divider = bar_height ? (translate([bar_height,0,bar_width], divider())):[]
 
-        let segment = union(translate([bar_height,0,0],
-            cuboid({size:[param.height,bar_width,bar_width],center:[param.height/2,bar_width/2,bar_width/2]})
-        ),
-            translate([bar_height,0,bar_width], generate_texture(param.texture,param.height))
-        )
-        
-        if(bar_height) {
-            segment = union(
-                segment,
-                translate([bar_height,0,bar_width], divider())
+            let segment = union(translate([bar_height, 0, 0],
+                    cuboid({
+                        size: [param.height, bar_width, bar_width],
+                        center: [param.height / 2, bar_width / 2, bar_width / 2]
+                    })
+                ),
+                translate([bar_height, 0, bar_width], generate_texture(param.texture, param.height))
             )
+
+            if (bar_height) {
+                segment = union(
+                    segment,
+                    translate([bar_height, 0, bar_width], divider())
+                )
+            }
+
+
+            segments.push(
+                segment
+            )
+            bar_height += param.height;
         }
-
-
-        segments.push(
-            segment
-        )
-        bar_height += param.height;
-
     }
 
     bar_object = union(
-                    translate([-socket_height,(bar_width-socket_width)/2,(bar_width-socket_width)/2],
-                        cuboid({size:[socket_height,socket_width,socket_width],center:[socket_height/2,socket_width/2,socket_width/2]})
-                    ),
-                    segments)
+        translate([-socket_height, (bar_width - socket_width) / 2, (bar_width - socket_width) / 2],
+            cuboid({
+                size: [socket_height, socket_width, socket_width],
+                center: [socket_height / 2, socket_width / 2, socket_width / 2]
+            })
+        ),
+        segments)
 
 
-    if(indicator_dist>0) {
+    if (indicator_dist > 0) {
         let indicators = []
 
-        for(let h=indicator_dist;h<=bar_height;h+=indicator_dist) {
+        for (let h = indicator_dist; h <= bar_height; h += indicator_dist) {
             indicators.push(
-                translate([h,0,0],indicator())
+                translate([h, 0, 0], indicator())
             )
             indicators.push(
-                translate([h,bar_width,0],indicator())
+                translate([h, bar_width, 0], indicator())
             )
         }
-        bar_object = subtract(bar_object,indicators);
+        bar_object = subtract(bar_object, indicators);
 
     }
-    
+
     if (center) {
-        bar_object = translate([bar_width/2,bar_width/2,base_thickness],
-                        rotate([0,-Math.PI/2,Math.PI/2],
-                            bar_object))
+        bar_object = translate([bar_width / 2, bar_width / 2, base_thickness],
+            rotate([0, -Math.PI / 2, Math.PI / 2],
+                bar_object))
     }
-    
+
     return bar_object;
 }
 
+/**
+ * Generates a single braille dot in the origin
+ *
+ * @return   CSG - braille dot
+ */
 function braille_dot() {
-    return translate([0,0,0.3], cylinder({radius:0.8, height:0.6}))
+    return translate([0, 0, 0.3], cylinder({radius: 0.8, height: 0.6}))
 }
 
-function braille_char(char='') {
-    char=char.toUpperCase();
+
+/**
+ * Generates braille dots for a single character
+ * @param {string} char   Character
+ *
+ * @return   CSG - character in braille
+ */
+function braille_char(char = '') {
+    char = char.toUpperCase();
 
     dots = []
-    console.log(braille[char]);
-    if (braille[char] & 0b100000 ) { dots.push( translate( [ 1.25+0*2.5 , 1.25+2*2.5 , 0 ] , braille_dot())) }
-    if (braille[char] & 0b010000 ) { dots.push( translate( [ 1.25+0*2.5 , 1.25+1*2.5 , 0 ] , braille_dot())) }
-    if (braille[char] & 0b001000 ) { dots.push( translate( [ 1.25+0*2.5 , 1.25+0*2.5 , 0 ] , braille_dot())) }
-    if (braille[char] & 0b000100 ) { dots.push( translate( [ 1.25+1*2.5 , 1.25+2*2.5 , 0 ] , braille_dot())) }
-    if (braille[char] & 0b000010 ) { dots.push( translate( [ 1.25+1*2.5 , 1.25+1*2.5 , 0 ] , braille_dot())) }
-    if (braille[char] & 0b000001 ) { dots.push( translate( [ 1.25+1*2.5 , 1.25+0*2.5 , 0 ] , braille_dot())) }
-
+    if (braille.hasOwnProperty(char)) {
+        console.log(braille[char]);
+        if (braille[char] & 0b100000) {
+            dots.push(translate([1.25 + 0 * 2.5, 1.25 + 2 * 2.5, 0], braille_dot()))
+        }
+        if (braille[char] & 0b010000) {
+            dots.push(translate([1.25 + 0 * 2.5, 1.25 + 1 * 2.5, 0], braille_dot()))
+        }
+        if (braille[char] & 0b001000) {
+            dots.push(translate([1.25 + 0 * 2.5, 1.25 + 0 * 2.5, 0], braille_dot()))
+        }
+        if (braille[char] & 0b000100) {
+            dots.push(translate([1.25 + 1 * 2.5, 1.25 + 2 * 2.5, 0], braille_dot()))
+        }
+        if (braille[char] & 0b000010) {
+            dots.push(translate([1.25 + 1 * 2.5, 1.25 + 1 * 2.5, 0], braille_dot()))
+        }
+        if (braille[char] & 0b000001) {
+            dots.push(translate([1.25 + 1 * 2.5, 1.25 + 0 * 2.5, 0], braille_dot()))
+        }
+    }
     return dots
 }
 
-function braille_text(text='', justify_left=false) {
+
+/**
+ * Generates braille for a given text
+ * @param {string} text   Text to convert
+ * @param {boolean} justify_left
+ *
+ * @return   CSG - braille text
+ */
+function braille_text(text = '', justify_left = false) {
     let chars = []
-    
-    for (let i=0;i<text.length;i++) {
-        chars.push(
-            translate([ justify_left ? i*6 : (text.length-i)*-6 ,-3.75,0],braille_char(text[i]))
-        )
+    let specialChars = 0;
+    console.log('braile_text: ' + text + ' | justify_left=' + justify_left);
+    for (let i = 0; i < text.length; i++) {
+        if ((i == 0 && text[i].match(/^\d$/)) ||
+            (text[i].match(/^\d$/) && !text[i - 1].match(/^\d$/))) {
+
+            chars.push(
+                translate([(i + specialChars) * 6, -3.75, 0], braille_char('#'))
+            )
+            specialChars++;
+        }
+        //console.log(text[i].toUpperCase() + ' - ' + braille.hasOwnProperty(text[i].toUpperCase()));
+        if (braille.hasOwnProperty(text[i].toUpperCase())) {
+            chars.push(
+                translate([(i + specialChars) * 6, -3.75, 0], braille_char(text[i]))
+            )
+        }
+
     }
-    console.log('chars-length:'+chars.length);
+
+    console.log('chars-length:' + chars.length);
+
+    if (!justify_left && chars.length > 0) {
+        chars = translate([-(text.length + specialChars) * 6, 0, 0], chars)
+    }
+
+
     return chars;
 }
 
-function legend(size=4,type_y=false,data=[]) {
-    let base_size = size*(bar_spacing+bar_width);
-    
+
+/**
+ * Generates a braille legend plate
+ * @param {number} size   Number of bars to label
+ * @param {boolean} type_y   Is it a legend for y-axis?
+ * @param {...string} data   Array of Strings to convert
+ *
+ * @return   CSG - legend plate
+ */
+function legend(size = 4, type_y = false, data = []) {
+    let base_size = size * (bar_spacing + bar_width);
+
 
     max_text_length = 0;
 
     data.forEach(text => {
-        max_text_length = Math.max(text.length,max_text_length)
+        max_text_length = Math.max(text.length, max_text_length)
     });
 
     max_text_length = max_text_length * 6 + 7
-    let legend_obj = cuboid({   size: [(type_y?max_text_length:base_size),(type_y?base_size:max_text_length),base_thickness],
-                                center: [(type_y?-max_text_length:base_size)/2,(type_y?base_size:-max_text_length)/2,base_thickness/2]});
-                        
+    let legend_obj = cuboid({
+        size: [(type_y ? max_text_length : base_size), (type_y ? base_size : max_text_length), base_thickness],
+        center: [(type_y ? -max_text_length : base_size) / 2, (type_y ? base_size : -max_text_length) / 2, base_thickness / 2]
+    });
 
-   
+
     let joints = union(
-            translate([-joint_spacing/2,0,0],
-                rotateZ(Math.PI,
-                    joint() 
+        translate([-joint_spacing / 2, 0, 0],
+            rotateZ(Math.PI,
+                joint()
             )),
-            translate([joint_spacing/2,0,0],
-                rotateZ(Math.PI,
-                    joint() 
+        translate([joint_spacing / 2, 0, 0],
+            rotateZ(Math.PI,
+                joint()
             ))
-        );
-    if(!type_y) {
-        joints = translate([base_size/2,0,0],joints);
+    );
+    if (!type_y) {
+        joints = translate([base_size / 2, 0, 0], joints);
     } else {
-        joints = translate([0,base_size/2,0], rotateZ(-Math.PI/2, joints));
+        joints = translate([0, base_size / 2, 0], rotateZ(-Math.PI / 2, joints));
     }
     let texts = [];
-    console.log('data:'+data.length);
-    for (let i=0;i<data.length;i++) {
-        console.log("i="+i+"\ndata[i]="+data[i]);
+    console.log('data:' + data.length);
+    for (let i = 0; i < data.length; i++) {
+        console.log("i=" + i + "\ndata[i]=" + data[i]);
         if (!type_y) {
             texts.push(
-                translate([ (bar_spacing+bar_width)/2+i*(bar_spacing+bar_width) , -2 , base_thickness ],
-                    rotateZ(Math.PI/2,
+                translate([(bar_spacing + bar_width) / 2 + i * (bar_spacing + bar_width), -2, base_thickness],
+                    rotateZ(Math.PI / 2,
                         braille_text(data[i])
-                        )
+                    )
                 )
             );
         } else {
             texts.push(
-                translate([ -2 , (bar_spacing+bar_width)/2+i*(bar_spacing+bar_width) , base_thickness ],
-                    
-                        braille_text(data[i])
-                        
+                translate([-2, (bar_spacing + bar_width) / 2 + i * (bar_spacing + bar_width), base_thickness],
+
+                    braille_text(data[i])
                 )
             );
         }
     }
-console.log(texts.length);
+    console.log(texts.length);
     return union(legend_obj, joints, texts);
-    
+
 }
 
-function assembly (data) {
+/**
+ * Generates Terminator element in the origin with joint sockets
+ * @param {number} width   Width of the terminator
+ *
+ * @return   CSG - terminator
+ */
+function terminator(width = 50) {
+    let joints = [translate([-joint_spacing / 2, 0, 0],
+        rotateZ(Math.PI,
+            joint()
+        )),
+        translate([joint_spacing / 2, 0, 0],
+            rotateZ(Math.PI,
+                joint()
+            ))]
+
+    return subtract(
+        cuboid({size: [8, width, base_thickness], center: [4, width / 2, base_thickness / 2]}),
+        translate([0, width / 2, 0],
+            rotateZ(-Math.PI / 2,
+                joints
+            )
+        )
+    )
+}
+
+
+/**
+ * Generates a braille legend plate that doesn't connect to the diagram base. It contains a title and a list of labeled textures.
+ * @param {Object} data   data object with title and array of textures and their labels
+ *
+ * @return   CSG - external legend plate
+ */
+function external_legend(data) {
+    let elements = []
+    let pos = 0
+    let max_x = 0
+    if (data.title) {
+        let el = translate([10, -15 / 2, 0],
+            braille_text(data.title, true)
+        )
+
+        elements.push(
+            translate([0, -pos, base_thickness],
+                el
+            )
+        )
+        pos += 15
+        max_x = Math.max(max_x, data.title.length * 6 + 20)
+    }
+
+    for (let i = 0; i < data.list.length; i++) {
+        list_el = data.list[i];
+
+
+        let texture = translate([5, -bar_width - 5, 0],
+            generate_texture(list_el.texture, bar_width)
+        )
+
+        let text = translate([10 + bar_width, -(5 + (bar_width / 2)), 0],
+            braille_text(list_el.label, true)
+        )
+
+        let el = union(texture, text)
+
+        elements.push(
+            translate([0, -pos, base_thickness],
+                el
+            )
+        )
+        max_x = Math.max(max_x, 10 + bar_width + list_el.label.length * 6 + 5);
+        pos += 25
+    }
+
+
+    return union(
+        cuboid({size: [max_x, pos, base_thickness], center: [max_x / 2, -pos / 2, base_thickness / 2]}),
+        elements
+    )
+}
+
+
+/**
+ * Generates fully assembled diagram from a defined data structure
+ * @param {Object} data
+ *
+ * @return   CSG - assembled diagram
+ */
+function assembly(data) {
     // console.dir(data);
     let size_x = data.bars.length;
     let size_y = data.bars[0].length;
-    
+
     let bars = []
 
-    for (let x=0;x<size_x;x++) {
-        for (let y=0;y<size_y;y++) {
-            let bar_obj = bar(data.bars[x][y],data.indicator_dist,true);
+    for (let x = 0; x < size_x; x++) {
+        for (let y = 0; y < size_y; y++) {
+            let bar_obj = bar(data.bars[x][y], data.indicator_dist, true);
 
-            if(y==size_y-1) {
+            if (y == size_y - 1) {
                 bar_obj = rotateZ(Math.PI,
                     bar_obj
-                    )
+                )
             }
 
 
             bars.push(
-                translate([(bar_spacing+bar_width)/2+x*(bar_spacing+bar_width),(bar_spacing+bar_width)/2+y*(bar_spacing+bar_width),0],
-                    
-                bar_obj
-                    
+                translate([(bar_spacing + bar_width) / 2 + x * (bar_spacing + bar_width), (bar_spacing + bar_width) / 2 + y * (bar_spacing + bar_width), 0],
+
+                    bar_obj
                 )
             )
         }
     }
 
     // split size to base segments
-    let base_x = Math.max(2,data.base_size.x);
-    let base_y = Math.max(2,data.base_size.y);
-
-    
+    let base_x = Math.max(2, data.base_size.x);
+    let base_y = Math.max(2, data.base_size.y);
 
 
     let legends_x = []
 
-    for (let i=0;i<Math.ceil(size_x/base_x);i++) {
+    for (let i = 0; i < Math.ceil(size_x / base_x); i++) {
         legends_x.push(
-            translate([base_x*i*(bar_spacing+bar_width),0,0],
-                legend(base_x,false,data.legend_x.slice(i*base_x,i*base_x+base_x))
+            translate([base_x * i * (bar_spacing + bar_width), 0, 0],
+                legend(base_x, false, data.legend_x.slice(i * base_x, i * base_x + base_x))
             )
         )
     }
 
-    
+
     let legends_y = []
-    for (let i=0;i<Math.ceil(size_y/base_y);i++) {
+    for (let i = 0; i < Math.ceil(size_y / base_y); i++) {
         legends_x.push(
-            translate([0,base_y*i*(bar_spacing+bar_width),0],
-                legend(base_y,true,data.legend_y.slice(i*base_y,i*base_y+base_y))
+            translate([0, base_y * i * (bar_spacing + bar_width), 0],
+                legend(base_y, true, data.legend_y.slice(i * base_y, i * base_y + base_y))
             )
         )
     }
 
     let bases = []
-    for (let x=0;x<Math.ceil(size_x/base_x);x++) {
-        for(let y=0;y<Math.ceil(size_y/base_y);y++) {
+    for (let x = 0; x < Math.ceil(size_x / base_x); x++) {
+        for (let y = 0; y < Math.ceil(size_y / base_y); y++) {
             bases.push(
-                translate([base_x*x*(bar_spacing+bar_width),base_y*y*(bar_spacing+bar_width),0],
-                    base(base_x,base_y)
+                translate([base_x * x * (bar_spacing + bar_width), base_y * y * (bar_spacing + bar_width), 0],
+                    base(base_x, base_y)
                 )
             )
         }
     }
-    
 
-    return [...bases,...bars,...legends_x,...legends_y]
+    let width_x = size_x * (bar_spacing + bar_width)
+    let width_y = size_y * (bar_spacing + bar_width)
+
+    let terminator_right = translate([width_x, 0, 0],
+        terminator(width_y)
+    )
+
+    let external_leg = translate([width_x + 20, width_y, 0],
+        external_legend(data.external_legend)
+    )
+
+
+    return translate([-width_x / 2, -width_y / 2, 0],
+        [...bases, ...bars, ...legends_x, ...legends_y, terminator_right, external_leg]
+    )
 }
 
 const main = () => {
-    // return legend()
-    return assembly(diagram_data)
+    return external_legend({
+        title: 'Test',
+        list: [
+            {
+                texture: {
+                    type: "roughness",
+                    value: 1
+                },
+                label: 'a123'
+            },
+            {
+                texture: {
+                    type: "roughness",
+                    value: 3
+                },
+                label: 'c%f&hi'
+            },
+            {
+                texture: {
+                    type: "roughness",
+                    value: 2
+                },
+                label: 'b'
+            }
+        ]
+    })
 
+
+    //return assembly(diagram_data)
+    //return terminator(50);
     //return braille_text('till');
     //return legend(4,false,["Till","Test","Hallo","bla"])
- /* return bar([
-        {height:20,
-        texture:{
-            type: "roughness",
-            value: 1
-        }},
-        {height: 30,
-        texture:{
-            type: "roughness",
-            value: 5
-        }},
-        {height:10,
-        texture:{
-            type: "roughness",
-            value: 2
-        }},
-        {height:20,
-        texture:{
-            type: "roughness",
-            value: 4
-        }}
-      
-  ],10,true);*/
+    /* return bar([
+           {height:20,
+           texture:{
+               type: "roughness",
+               value: 1
+           }},
+           {height: 30,
+           texture:{
+               type: "roughness",
+               value: 5
+           }},
+           {height:10,
+           texture:{
+               type: "roughness",
+               value: 2
+           }},
+           {height:20,
+           texture:{
+               type: "roughness",
+               value: 4
+           }}
 
- /* return texture ({
-    type: "roughness",
-    value: 1
-},30)*/
+     ],10,true);*/
+
+    /* return texture ({
+       type: "roughness",
+       value: 1
+   },30)*/
 
 //return divider();
 // indicator();
 
 //return base();
-/*
-return subtract(
-    cube({size:5}),
-    [cube({size:5, center:[2,2,2]}),
-    cube({size:5, center:[-2,-2,-2]})]
-    )
-  */
+    /*
+    return subtract(
+        cube({size:5}),
+        [cube({size:5, center:[2,2,2]}),
+        cube({size:5, center:[-2,-2,-2]})]
+        )
+      */
 }
 
-module.exports = { main, assembly }
+module.exports = {main, assembly}
