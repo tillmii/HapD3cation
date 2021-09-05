@@ -1,19 +1,62 @@
 const CSV = require('csv-string');
-// const exampleSpecification = require('./ExampleSpecification');
 
 function compile(specification) {
+    let jsonSpec = specification;
 
-    // console.log(exampleSpecification)
-
-    // specification = JSON.stringify(exampleSpecification);
-
-    let jsonSpec = null;
-
-    try {
-        jsonSpec = specification
-    } catch(e) {
-        return false;
-    }
+    let patternTypes = [
+        {
+            texture: {
+                type: "lines",
+                value: 1,
+                rotation: 45
+            }
+        },
+        {
+            texture: {
+                type: "lines",
+                value: 1,
+                rotation: 135
+            }
+        },
+        {
+            texture: {
+                type: "stair_pattern",
+                value: 1
+            }
+        },
+        {
+            texture: {
+                type: "roughness",
+                value: 2
+            }
+        },
+        {
+            texture: {
+                type: "grid_pattern",
+                value: 3
+            }
+        },
+        {
+            texture: {
+                type: "dashed_double_lines",
+                value: 1
+            }
+        },
+        {
+            texture: {
+                type: "lines",
+                value: 1,
+                rotation: 0
+            }
+        },
+        {
+            texture: {
+                type: "lines",
+                value: 1,
+                rotation: 90
+            }
+        },
+    ];
 
     let data = CSV.parse(jsonSpec.data.values);
     // Get first row from csv as array
@@ -21,6 +64,8 @@ function compile(specification) {
 
     let maxHeight = jsonSpec.encoding.z.scale.maxHeight;
     let indicatorValue = jsonSpec.encoding.z.scale.indicatorValue;
+
+    let textureType = jsonSpec.encoding.texture.type;
 
     let xAxisField = jsonSpec.encoding.x.field;
     let yAxisField = jsonSpec.encoding.y.field;
@@ -34,8 +79,7 @@ function compile(specification) {
 
     let xAxisValues = []
     let yAxisValues = []
-    //let zAxisValues = []
-    let roughnessValues = []
+    let textureValues = []
 
     data.forEach((item, index, array) => {
         if (!xAxisValues.includes(item[xAxisFieldPos])) {
@@ -44,86 +88,95 @@ function compile(specification) {
         if (!yAxisValues.includes(item[yAxisFieldPos])) {
             yAxisValues.push(item[yAxisFieldPos]);
         }
-        //zAxisValues.push(item[zAxisFieldPos]);
-        if (!roughnessValues.includes(item[roughnessFieldPos])) {
-            roughnessValues.push(item[roughnessFieldPos]);
+        if (!textureValues.includes(item[roughnessFieldPos])) {
+            textureValues.push(item[roughnessFieldPos]);
         }
     })
 
-    // Get the Value of the tallest bar in the chart
+    // Get the Value of the tallest bar in the chart -> maxValue
     let maxValue = 0;
     xAxisValues.forEach((xItem, xIndex, xArray) => {
         yAxisValues.forEach((yItem, yIndex, yArray) => {
             let barValue = 0;
-            roughnessValues.forEach((roughnessItem, roughnessIndex, roughnessArray) => {
+            textureValues.forEach((textureItem, textureIndex, textureArray) => {
                 data.forEach((dataItem, dataIndex, dataArray) => {
-                    if (dataItem.includes(xItem) && dataItem.includes(yItem) && dataItem.includes(roughnessItem)) {
-                        console.log(dataItem[zAxisFieldPos])
+                    if (dataItem.includes(xItem) && dataItem.includes(yItem) && dataItem.includes(textureItem)) {
                         barValue += parseFloat(dataItem[zAxisFieldPos]);
                     }
                 })
             })
             if (barValue > maxValue) {
-                console.log("Bar Value:")
-                console.log(barValue);
                 maxValue = barValue;
             }
         })
     })
 
-    // console.log(maxValue);
-    //maxValue = 3451402;
-
+    // Factor to get the desired heights from the given values by multiplying
     let factor = maxHeight / maxValue;
 
     let xAxisCount = xAxisValues.length;
     let yAxisCount = yAxisValues.length;
-    // let zAxisCount = zAxisValues.length;
-    // let roughnessCount = roughnessValues.length;
-
-    // console.log(xAxisValues.toString());
-    // console.log(yAxisValues.toString());
-    // console.log(zAxisValues.toString());
-    // console.log(roughnessValues.toString());
 
     let jscadSpec = {};
 
     jscadSpec.legend_x = xAxisValues;
     jscadSpec.legend_y = yAxisValues;
 
-    console.log(JSON.stringify(jsonSpec, null, 4));
-
     jscadSpec.external_legend = {};
     jscadSpec.external_legend.title = jsonSpec.title;
     jscadSpec.external_legend.list = [];
 
-    roughnessValues.forEach((roughnessItem, roughnessIndex, roughnessArray) => {
-        jscadSpec.external_legend.list.push(
-            {
-                texture: {
-                    type: "roughness",
-                    value: 2 + roughnessIndex * 2
-                },
-                label: roughnessItem
-            }
-        );
+    // Data for the external legend
+    textureValues.forEach((textureItem, textureIndex, textureArray) => {
+        switch (textureType) {
+            case "nominal":
+                let row = patternTypes[textureIndex];
+                row.label = textureItem;
+                jscadSpec.external_legend.list.push(row);
+                break;
+            case "ordinal":
+                jscadSpec.external_legend.list.push(
+                    {
+                        texture: {
+                            type: "roughness",
+                            value: 2 + textureIndex * 2
+                        },
+                        label: textureItem
+                    }
+                );
+                break;
+            default:
+                console.log(textureType + " is no valid texture type!")
+                break;
+        }
     });
 
+    // Data for the Haptification
     jscadSpec.bars = []
     xAxisValues.forEach((xItem, xIndex, xArray) => {
         jscadSpec.bars.push([]);
         yAxisValues.forEach((yItem, yIndex, yArray) => {
             jscadSpec.bars[xIndex].push([]);
             let barSpec = [];
-            roughnessValues.forEach((roughnessItem, roughnessIndex, roughnessArray) => {
+            textureValues.forEach((textureItem, textureIndex, textureArray) => {
                 data.forEach((dataItem, dataIndex, dataArray) => {
-                    if (dataItem.includes(xItem) && dataItem.includes(yItem) && dataItem.includes(roughnessItem)) {
-                        let barSegmentSpec = {
-                            "height": Math.round(dataItem[zAxisFieldPos] * factor),
-                            "texture": {
-                                "type": "roughness",
-                                "value": 2 + roughnessIndex * 2,
-                            }
+                    if (dataItem.includes(xItem) && dataItem.includes(yItem) && dataItem.includes(textureItem)) {
+                        let barSegmentSpec = {};
+                        barSegmentSpec.height = Math.round(dataItem[zAxisFieldPos] * factor);
+                        switch (textureType) {
+                            case "nominal":
+                                barSegmentSpec.texture = patternTypes[textureIndex].texture;
+                                break;
+                            case "ordinal":
+                                barSegmentSpec.texture =
+                                {
+                                    "type": "roughness",
+                                    "value": 2 + textureIndex * 2,
+                                }
+                                break;
+                            default:
+                                console.log(textureType + " is no valid texture type!")
+                                break;
                         }
                         barSpec.push(barSegmentSpec);
                     }
@@ -133,16 +186,12 @@ function compile(specification) {
         })
     })
 
-    jscadSpec.indicator_dist =  Math.round(indicatorValue * factor);
+    jscadSpec.indicator_dist = Math.round(indicatorValue * factor);
     jscadSpec.base_size = {"x": xAxisCount, "y": yAxisCount};
 
-    // console.log(JSON.stringify(jscadSpec));
+    console.log(JSON.stringify(jsonSpec, null, 4));
 
     return jscadSpec;
 }
 
-function getHeight(value, maxHeight, indicatorValue) {
-    return Math.round(value / indicatorValue * maxHeight);
-}
-
-module.exports = { compile }
+module.exports = {compile}

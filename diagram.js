@@ -11,7 +11,7 @@ const {
     rotateY,
     rotateZ
 } = require('@jscad/modeling').transforms
-const {union, subtract} = require('@jscad/modeling').booleans
+const {union, subtract, intersect} = require('@jscad/modeling').booleans
 const {extrudeLinear, extrudeFromSlices} = require('@jscad/modeling').extrusions
 const {create} = require('@jscad/modeling').geometries.geom3;
 
@@ -448,6 +448,7 @@ function base(base_size_x = 4, base_size_y = 2) {
  * @typedef {Object} texture
  * @property {string} type   Type of the texture
  * @property {number} value   Texture specific value (density)
+ * @property {number} rotation   Texture specific value (rotation)
  */
 
 /**
@@ -459,6 +460,8 @@ function base(base_size_x = 4, base_size_y = 2) {
  */
 function generate_texture(texture, height) {
     let texture_objects = [];
+    let line_height = 0.3
+    let line_thickness = 0.5
     switch (texture.type) {
 
         case "roughness":
@@ -474,13 +477,152 @@ function generate_texture(texture, height) {
                 for (let c = 0; c < (cols - r % 2); c++) {
                     texture_objects.push(
                         translate([border_x + dot_dist / 2 + r * dot_dist, border_y + dot_dist / 2 + (r % 2 * dot_dist / 2 + c * dot_dist)],
-                            cylinder({radius: 0.4, height: 0.2})
+                            cylinder({radius: 0.5, height: 0.3})
                         ))
                 }
             }
 
             break;
+
+        case "lines":
+
+
+            let line_dist = 1.3 + texture.value * 0.5 + line_thickness / 2;
+            let num_lines = Math.floor(height / line_dist);
+
+            let border = (height - num_lines * line_dist) * 0.5
+
+            num_lines *= 2
+
+            for (let i = 0; i < num_lines; i++) {
+                texture_objects.push(
+                    cuboid({
+                        size: [line_thickness, 1.5 * Math.max(bar_width, height), line_height],
+                        center: [-height / 2 + border + i * line_dist, 0, line_height / 2]
+                    })
+                )
+            }
+
+            texture_objects = translate(
+                [height / 2, bar_width / 2, 0],
+                rotateZ(
+                    texture.rotation * (Math.PI / 180),
+                    texture_objects
+                )
+            )
+
+            let intersection_body = cuboid({
+                size: [height, bar_width, line_height],
+                center: [height / 2, bar_width / 2, line_height / 2]
+            })
+
+            texture_objects = intersect(intersection_body, union(texture_objects))
+
+
+            break;
+
+
+        case "grid_pattern":
+
+            texture_objects = union(
+                generate_texture({type: "lines", value: texture.value, rotation: 0}, height),
+                generate_texture({type: "lines", value: texture.value, rotation: 90}, height)
+            )
+
+            break;
+
+        case "dashed_double_lines":
+            console.log("double_dashed_lines");
+            let col_dist = 1.2 + texture.value * 0.5
+            let row_dist = col_dist * 0.7
+
+            let row_height = 2.5;
+            let line_distance = 0.7;
+            let line_width = 0.5;
+
+            let col_size = line_distance + 2 * line_width + col_dist;
+            let row_size = row_height + row_dist
+
+            console.log("col_size=" + col_size + "  | row_size=" + row_size);
+
+            let num_rows = Math.floor(height / (row_size));
+            let num_cols = Math.floor(bar_width / (col_size))
+
+            let border_col = 0.5 * (bar_width - (col_size) * num_cols) + col_dist / 2
+            let border_row = 0.5 * (height - (row_size) * num_rows) + row_dist / 2
+
+            console.log("border_col=" + border_col + "  | border_row=" + border_row);
+
+            for (let row = 0; row < num_rows; row++) {
+                for (let col = 0; col < num_cols; col++) {
+
+                    texture_objects.push(
+                        translate([border_row + row * row_size, border_col + col * col_size, 0],
+                            cuboid({
+                                size: [row_height, line_width, line_height],
+                                center: [row_height / 2, line_width / 2, line_height / 2]
+                            })
+                        )
+                    )
+
+                    texture_objects.push(
+                        translate([border_row + row * row_size, border_col + col * col_size + line_width + line_distance, 0],
+                            cuboid({
+                                size: [row_height, line_width, line_height],
+                                center: [row_height / 2, line_width / 2, line_height / 2]
+                            })
+                        )
+                    )
+
+                }
+            }
+            break;
+
+        case "stair_pattern":
+
+            let pattern_size = 1.3 + texture.value * 0.5 + line_thickness / 2;
+
+            let num_x = Math.ceil(height / pattern_size)
+            let num_y = Math.ceil(bar_width / pattern_size)
+
+            for (let x = 0; x < num_x; x++) {
+                for (let y = 0; y < num_y; y++) {
+
+                    if (x % 2 == y % 2) {
+                        texture_objects.push(
+                            translate([x * pattern_size, y * pattern_size, 0],
+                                cuboid({
+                                    size: [line_thickness, pattern_size, line_height],
+                                    center: [line_thickness / 2, pattern_size / 2, line_height / 2]
+                                })
+                            )
+                        )
+                    } else {
+                        texture_objects.push(
+                            translate([x * pattern_size, y * pattern_size, 0],
+                                cuboid({
+                                    size: [pattern_size, line_thickness, line_height],
+                                    center: [pattern_size / 2, line_thickness / 2, line_height / 2]
+                                })
+                            )
+                        )
+                    }
+                }
+            }
+
+            texture_objects = translate([0.5 * (height - num_x * pattern_size), 0.5 * (bar_width - num_y * pattern_size), 0], texture_objects)
+
+            break;
+
     }
+
+    let intersection_body = cuboid({
+        size: [height, bar_width, line_height],
+        center: [height / 2, bar_width / 2, line_height / 2]
+    })
+
+    texture_objects = intersect(intersection_body, union(texture_objects))
+
     return union(texture_objects)
 }
 
@@ -926,66 +1068,82 @@ function assembly(data) {
 }
 
 const main = () => {
-    return external_legend({
-        title: 'Test',
-        list: [
-            {
-                texture: {
-                    type: "roughness",
-                    value: 1
-                },
-                label: 'a123'
-            },
-            {
-                texture: {
-                    type: "roughness",
-                    value: 3
-                },
-                label: 'c%f&hi'
-            },
-            {
-                texture: {
-                    type: "roughness",
-                    value: 2
-                },
-                label: 'b'
-            }
-        ]
-    })
+    // return external_legend({
+    //     title: 'Test',
+    //     list: [
+    //         {
+    //             texture:{
+    //                 type: "roughness",
+    //                 value: 1
+    //             },
+    //             label: 'a123'
+    //         },
+    //         {
+    //             texture:{
+    //                 type: "roughness",
+    //                 value: 3
+    //             },
+    //             label: 'c%f&hi'
+    //         },
+    //         {
+    //             texture:{
+    //                 type: "roughness",
+    //                 value: 2
+    //             },
+    //             label: 'b'
+    //         }
+    //     ]
+    // })
 
 
     //return assembly(diagram_data)
     //return terminator(50);
-    //return braille_text('till');
-    //return legend(4,false,["Till","Test","Hallo","bla"])
-    /* return bar([
-           {height:20,
-           texture:{
-               type: "roughness",
-               value: 1
-           }},
-           {height: 30,
-           texture:{
-               type: "roughness",
-               value: 5
-           }},
-           {height:10,
-           texture:{
-               type: "roughness",
-               value: 2
-           }},
-           {height:20,
-           texture:{
-               type: "roughness",
-               value: 4
-           }}
+    //return braille_text('test');
+    //return legend(4,false,["Test","Test","Hallo","Welt"])
+    return bar([
+        {
+            height: 20,
+            texture: {
+                type: "roughness",
+                value: 1
+            }
+        },
+        {
+            height: 20,
+            texture: {
+                type: "grid_pattern",
+                value: 1
+            }
+        },
+        {
+            height: 20,
+            texture: {
+                type: "lines",
+                value: 1,
+                rotation: 0
+            }
+        },
+        {
+            height: 20,
+            texture: {
+                type: "stair_pattern",
+                value: 1
+            }
+        },
+        {
+            height: 20,
+            texture: {
+                type: "dashed_double_lines",
+                value: 1
+            }
+        }
 
-     ],10,true);*/
+    ], 10, true);
 
-    /* return texture ({
-       type: "roughness",
-       value: 1
-   },30)*/
+//   return generate_texture ({
+//     type: "stair_pattern",
+//     value: 0
+//     },30)
 
 //return divider();
 // indicator();
