@@ -6,7 +6,7 @@ import './style.css';
 import '../public/css/split.css'
 import 'bootstrap/dist/css/bootstrap.min.css';
 
-import viewer from '../cjs/viewer'
+import viewer from './viewer'
 import superagent from 'superagent'
 import Split from 'react-split'
 
