@@ -3,54 +3,38 @@
 <head>
     <meta charset="UTF-8">
     <title>HapD3cation</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-KyZXEAg3QhqLMpG8r+8fhAXLRk2vvoC2f3B09zVXn8CA5QIVfZOJ3BCsw2P0p/We" crossorigin="anonymous">
 </head>
-<body>
+<body class="">
 
-<h1>HapD3cation</h1>
+<div class="container mt-5">
+    <div class="row">
+        <div class="col">
+            <h1>HapD3cation</h1>
+            <p>
+                Welcome to HapD3cation!
+                With this application you can create information haptifications in an automated way.
+            </p>
+            <p>
+                It is created in the manner of
+                <a href="https://vega.github.io/vega-lite/">Vega-Lite</a>, but in 3D. It uses
+                <a href="https://github.com/jscad/OpenJSCAD.org">JSCAD</a> to create the three-dimensional haptifications.
+            </p>
+            <p>
+                Have fun experimenting!
+            </p>
+            <a href="/editor">
+                <button type="button" class="btn btn-outline-primary btn-lg">Get Started</button>
+            </a>
+        </div>
+        <div class="col">
+            <img src="../../public/img/logo.svg" class="img-fluid w-50  position-relative top-50 start-50 translate-middle" alt="Logo of HapD3cation">
+        </div>
+    </div>
+</div>
 
-<p>
-    <a href="/studiendaten1">Hier</a>
-    finden Sie die Daten für die erste Studie von dem erstellten Prototypen.
-</p>
-<p>
-    <a href="/beschreibung">Hier</a>
-    finden Sie die verbale Beschreibung des ersten Prototypen.
-</p>
-
-<p>
-    Welcome to HapD3cation!
-    This application is a prototype for automated generation of 3D haptification of information visualization.
-    <br>
-    ... a lot of ation's, right?
-</p>
-<p>
-    It is created in the manner of
-    <a href="https://vega.github.io/vega-lite/">Vega-Lite</a>, but in 3D. Therefore it uses
-    <a href="https://www.x3dom.org/">X3DOM</a> to render the threedimensional scenes and
-    <a href="https://d3js.org/">D3</a> to bind data to DOM-elements and to dynamically manipulate the DOM.
-</p>
-<p>
-    The example data is from
-    <a href="https://covid.ourworldindata.org/data/owid-covid-data.json">Our Wold in Data</a>.
-    The following examples mainly use the current covid-19 vaccination data.
-</p>
-
-
-
-<p>
-    <a href="/d3_example">Here</a>
-    you can see a D3 example, which uses svg to create a barchart.
-</p>
-
-<p>
-    <a href="/vega_example">Here</a>
-    you can see a Vega-Lite example.
-</p>
-
-<p>
-    <a href="/hapd3cation">Here</a>
-    you can go to the actual application.
-</p>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-U1DAWAznBHeqEIlVSCgzq+c9gqGAJn5c/t99JyeKa9xxaYpSvHU5awsuZVVFIhvj" crossorigin="anonymous"></script>
 
 </body>
 </html>
