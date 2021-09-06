@@ -37,6 +37,7 @@
     "monaco-editor": "^0.26.1",
     "monaco-editor-webpack-plugin": "^4.1.1",
     "nanohtml": "^1.9.1",
+    "nodemon": "^2.0.12",
     "path": "^0.12.7",
     "react": "^17.0.2",
     "react-bootstrap": "^2.0.0-beta.4",
