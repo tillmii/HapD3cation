@@ -171,10 +171,16 @@ class EditorComponent extends React.Component {
 
 class DataComponent extends React.Component {
     render() {
+        let data = "";
+        try {
+            data = JSON.parse(this.props.specification).data.values;
+        } catch (e) {
+            console.log("Error parsing the data")
+        }
         return (
             <div className="scrollable">
                 <CsvToHtmlTable
-                    data={JSON.parse(this.props.specification).data.values}
+                    data={data}
                     csvDelimiter=","
                     tableClassName="table table-striped table-bordered table-hover"
                 />
