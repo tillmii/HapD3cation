@@ -46,6 +46,7 @@
     "react-router-dom": "^5.2.0",
     "react-split": "^2.0.11",
     "require": "^2.4.20",
+    "serve-favicon": "^2.5.0",
     "split.js": "^1.6.4",
     "superagent": "^6.1.0"
   },

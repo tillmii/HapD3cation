@@ -77,9 +77,9 @@ function compile(specification) {
     let zAxisFieldPos = dataHeader.indexOf(zAxisField);
     let roughnessFieldPos = dataHeader.indexOf(textureField);
 
-    let xAxisValues = []
-    let yAxisValues = []
-    let textureValues = []
+    let xAxisValues = [];
+    let yAxisValues = [];
+    let textureValues = [];
 
     data.forEach((item, index, array) => {
         if (!xAxisValues.includes(item[xAxisFieldPos])) {
@@ -92,6 +92,9 @@ function compile(specification) {
             textureValues.push(item[roughnessFieldPos]);
         }
     })
+
+    let xAxisCount = xAxisValues.length;
+    let yAxisCount = yAxisValues.length;
 
     // Get the Value of the tallest bar in the chart -> maxValue
     let maxValue = 0;
@@ -113,9 +116,6 @@ function compile(specification) {
 
     // Factor to get the desired heights from the given values by multiplying
     let factor = maxHeight / maxValue;
-
-    let xAxisCount = xAxisValues.length;
-    let yAxisCount = yAxisValues.length;
 
     let jscadSpec = {};
 
@@ -163,6 +163,9 @@ function compile(specification) {
                     if (dataItem.includes(xItem) && dataItem.includes(yItem) && dataItem.includes(textureItem)) {
                         let barSegmentSpec = {};
                         barSegmentSpec.height = Math.round(dataItem[zAxisFieldPos] * factor);
+                        // if (barSegmentSpec.height < 4) {
+                        //     barSegmentSpec.height = 4;
+                        // }
                         switch (textureType) {
                             case "nominal":
                                 barSegmentSpec.texture = patternTypes[textureIndex].texture;
@@ -189,7 +192,7 @@ function compile(specification) {
     jscadSpec.indicator_dist = Math.round(indicatorValue * factor);
     jscadSpec.base_size = {"x": xAxisCount, "y": yAxisCount};
 
-    console.log(JSON.stringify(jsonSpec, null, 4));
+    console.log(JSON.stringify(jscadSpec, null, 4));
 
     return jscadSpec;
 }
