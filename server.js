@@ -6,6 +6,7 @@ const express = require('express');
 const bodyParser = require('body-parser')
 const cors = require('cors')
 const path = require('path');
+const favicon = require('serve-favicon')
 
 const hapd3cation_schema = require('./hapd3cationSchema.json');
 
@@ -15,6 +16,7 @@ const port = process.env.PORT || 8080;
 app.use('/public', express.static(__dirname + '/public'));
 app.use('/dist', express.static(__dirname + '/dist'));
 app.use('/OpenJSCAD.org', express.static(__dirname + '/OpenJSCAD.org'));
+app.use(favicon(path.join(__dirname,'public','img','favicon.ico')));
 app.use(cors());
 
 app.use(bodyParser.json({limit: '50mb'}));
