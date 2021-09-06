@@ -12,3 +12,6 @@ To run this project, install it locally using npm:
 $ cd ../HapD3cation
 $ npm install
 $ npm run build
+```
+
+After that just call localhost:8080 in your browser.
