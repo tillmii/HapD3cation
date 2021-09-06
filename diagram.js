@@ -74,237 +74,474 @@ let braille = {
 }
 
 let diagram_data = {
-    legend_x: [
-        "AB",
-        "CD",
-        "EF"
+    "legend_x": [
+        "Montag",
+        "Dienstag",
+        "Mittwoch",
+        "Donnerstag",
+        "Freitag",
+        "Samstag",
+        "Sonntag"
     ],
-    legend_y: [
-        "Hallo",
-        "Till"
+    "legend_y": [
+        "a"
     ],
-    external_legend: {
-        title: 'Test',
-        list: [
+    "external_legend": {
+        "title": "Screentime",
+        "list": [
             {
-                texture: {
-                    type: "roughness",
-                    value: 1
+                "texture": {
+                    "type": "lines",
+                    "value": 1,
+                    "rotation": 45
                 },
-                label: 'a'
+                "label": "Sonstiges"
             },
             {
-                texture: {
-                    type: "roughness",
-                    value: 3
+                "texture": {
+                    "type": "lines",
+                    "value": 1,
+                    "rotation": 135
                 },
-                label: 'cdefghi'
+                "label": "Videos"
             },
             {
-                texture: {
-                    type: "roughness",
-                    value: 2
+                "texture": {
+                    "type": "stair_pattern",
+                    "value": 1
                 },
-                label: 'b'
+                "label": "Messenger"
+            },
+            {
+                "texture": {
+                    "type": "roughness",
+                    "value": 2
+                },
+                "label": "Dating"
+            },
+            {
+                "texture": {
+                    "type": "grid_pattern",
+                    "value": 3
+                },
+                "label": "Tools"
+            },
+            {
+                "texture": {
+                    "type": "dashed_double_lines",
+                    "value": 1
+                },
+                "label": "Musik"
+            },
+            {
+                "texture": {
+                    "type": "lines",
+                    "value": 1,
+                    "rotation": 0
+                },
+                "label": "Spiele"
             }
         ]
     },
-    bars: [ // [x][y]
+    "bars": [
         [
             [
                 {
-                    height: 20,
-                    texture: {
-                        type: "roughness",
-                        value: 1
+                    "height": 24,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 45
                     }
                 },
                 {
-                    height: 30,
-                    texture: {
-                        type: "roughness",
-                        value: 5
+                    "height": 6,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 135
                     }
                 },
                 {
-                    height: 10,
-                    texture: {
-                        type: "roughness",
-                        value: 2
+                    "height": 6,
+                    "texture": {
+                        "type": "stair_pattern",
+                        "value": 1
                     }
                 },
                 {
-                    height: 20,
-                    texture: {
-                        type: "roughness",
-                        value: 4
+                    "height": 2,
+                    "texture": {
+                        "type": "roughness",
+                        "value": 2
+                    }
+                },
+                {
+                    "height": 6,
+                    "texture": {
+                        "type": "grid_pattern",
+                        "value": 3
+                    }
+                },
+                {
+                    "height": 2,
+                    "texture": {
+                        "type": "dashed_double_lines",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 3,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 0
                     }
                 }
-
-            ],
-            [
-                {
-                    height: 10,
-                    texture: {
-                        type: "roughness",
-                        value: 1
-                    }
-                },
-                {
-                    height: 25,
-                    texture: {
-                        type: "roughness",
-                        value: 5
-                    }
-                },
-                {
-                    height: 20,
-                    texture: {
-                        type: "roughness",
-                        value: 2
-                    }
-                },
-                {
-                    height: 15,
-                    texture: {
-                        type: "roughness",
-                        value: 4
-                    }
-                }
-
-            ],
+            ]
         ],
         [
             [
                 {
-                    height: 10,
-                    texture: {
-                        type: "roughness",
-                        value: 1
+                    "height": 48,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 45
                     }
                 },
                 {
-                    height: 5,
-                    texture: {
-                        type: "roughness",
-                        value: 5
+                    "height": 21,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 135
                     }
                 },
                 {
-                    height: 42,
-                    texture: {
-                        type: "roughness",
-                        value: 2
+                    "height": 18,
+                    "texture": {
+                        "type": "stair_pattern",
+                        "value": 1
                     }
                 },
                 {
-                    height: 7,
-                    texture: {
-                        type: "roughness",
-                        value: 4
+                    "height": 3,
+                    "texture": {
+                        "type": "roughness",
+                        "value": 2
+                    }
+                },
+                {
+                    "height": 4,
+                    "texture": {
+                        "type": "grid_pattern",
+                        "value": 3
+                    }
+                },
+                {
+                    "height": 3,
+                    "texture": {
+                        "type": "dashed_double_lines",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 0
                     }
                 }
-
-            ],
-            [
-                {
-                    height: 28,
-                    texture: {
-                        type: "roughness",
-                        value: 1
-                    }
-                },
-                {
-                    height: 21,
-                    texture: {
-                        type: "roughness",
-                        value: 5
-                    }
-                },
-                {
-                    height: 5,
-                    texture: {
-                        type: "roughness",
-                        value: 2
-                    }
-                },
-                {
-                    height: 14,
-                    texture: {
-                        type: "roughness",
-                        value: 4
-                    }
-                }
-
-            ],
+            ]
         ],
         [
             [
                 {
-                    height: 5,
-                    texture: {
-                        type: "roughness",
-                        value: 1
+                    "height": 17,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 45
                     }
                 },
                 {
-                    height: 47,
-                    texture: {
-                        type: "roughness",
-                        value: 5
+                    "height": 5,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 135
                     }
                 },
                 {
-                    height: 7,
-                    texture: {
-                        type: "roughness",
-                        value: 2
+                    "height": 6,
+                    "texture": {
+                        "type": "stair_pattern",
+                        "value": 1
                     }
                 },
                 {
-                    height: 8,
-                    texture: {
-                        type: "roughness",
-                        value: 4
+                    "height": 5,
+                    "texture": {
+                        "type": "roughness",
+                        "value": 2
+                    }
+                },
+                {
+                    "height": 2,
+                    "texture": {
+                        "type": "grid_pattern",
+                        "value": 3
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "dashed_double_lines",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 0
                     }
                 }
-
-            ],
+            ]
+        ],
+        [
             [
                 {
-                    height: 28,
-                    texture: {
-                        type: "roughness",
-                        value: 1
+                    "height": 21,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 45
                     }
                 },
                 {
-                    height: 16,
-                    texture: {
-                        type: "roughness",
-                        value: 5
+                    "height": 14,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 135
                     }
                 },
                 {
-                    height: 17,
-                    texture: {
-                        type: "roughness",
-                        value: 2
+                    "height": 7,
+                    "texture": {
+                        "type": "stair_pattern",
+                        "value": 1
                     }
                 },
                 {
-                    height: 25,
-                    texture: {
-                        type: "roughness",
-                        value: 4
+                    "height": 2,
+                    "texture": {
+                        "type": "roughness",
+                        "value": 2
+                    }
+                },
+                {
+                    "height": 3,
+                    "texture": {
+                        "type": "grid_pattern",
+                        "value": 3
+                    }
+                },
+                {
+                    "height": 2,
+                    "texture": {
+                        "type": "dashed_double_lines",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 0
                     }
                 }
-
-            ],
+            ]
+        ],
+        [
+            [
+                {
+                    "height": 31,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 45
+                    }
+                },
+                {
+                    "height": 6,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 135
+                    }
+                },
+                {
+                    "height": 12,
+                    "texture": {
+                        "type": "stair_pattern",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "roughness",
+                        "value": 2
+                    }
+                },
+                {
+                    "height": 7,
+                    "texture": {
+                        "type": "grid_pattern",
+                        "value": 3
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "dashed_double_lines",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 0
+                    }
+                }
+            ]
+        ],
+        [
+            [
+                {
+                    "height": 41,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 45
+                    }
+                },
+                {
+                    "height": 14,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 135
+                    }
+                },
+                {
+                    "height": 10,
+                    "texture": {
+                        "type": "stair_pattern",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "roughness",
+                        "value": 2
+                    }
+                },
+                {
+                    "height": 4,
+                    "texture": {
+                        "type": "grid_pattern",
+                        "value": 3
+                    }
+                },
+                {
+                    "height": 2,
+                    "texture": {
+                        "type": "dashed_double_lines",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 0
+                    }
+                }
+            ]
+        ],
+        [
+            [
+                {
+                    "height": 27,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 45
+                    }
+                },
+                {
+                    "height": 8,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 135
+                    }
+                },
+                {
+                    "height": 15,
+                    "texture": {
+                        "type": "stair_pattern",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 4,
+                    "texture": {
+                        "type": "roughness",
+                        "value": 2
+                    }
+                },
+                {
+                    "height": 4,
+                    "texture": {
+                        "type": "grid_pattern",
+                        "value": 3
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "dashed_double_lines",
+                        "value": 1
+                    }
+                },
+                {
+                    "height": 1,
+                    "texture": {
+                        "type": "lines",
+                        "value": 1,
+                        "rotation": 0
+                    }
+                }
+            ]
         ]
     ],
-    indicator_dist: 10,
-    base_size: {x: 3, y: 2}
+    "indicator_dist": 4,
+    "base_size": {
+        "x": 7,
+        "y": 1
+    }
 }
 
 
@@ -465,10 +702,11 @@ function generate_texture(texture, height) {
     switch (texture.type) {
 
         case "roughness":
+        case "dotted_pattern":
 
             let dot_dist = 1 + texture.value * 0.5;
-            let rows = Math.floor(height / dot_dist);
-            let cols = Math.floor(bar_width / dot_dist);
+            let rows = Math.max(Math.floor(height / dot_dist), 1);
+            let cols = Math.max(Math.floor(bar_width / dot_dist), 1);
 
             let border_x = (height - rows * dot_dist) * 0.5;
             let border_y = (bar_width - cols * dot_dist) * 0.5;
@@ -488,7 +726,7 @@ function generate_texture(texture, height) {
 
 
             let line_dist = 1.3 + texture.value * 0.5 + line_thickness / 2;
-            let num_lines = Math.floor(height / line_dist);
+            let num_lines = Math.max(Math.floor(height / line_dist), 1);
 
             let border = (height - num_lines * line_dist) * 0.5
 
@@ -526,7 +764,7 @@ function generate_texture(texture, height) {
 
             texture_objects = union(
                 generate_texture({type: "lines", value: texture.value, rotation: 0}, height),
-                generate_texture({type: "lines", value: texture.value, rotation: 90}, height)
+                generate_texture({type: "lines", value: texture.value, rotation: 90}, bar_width)
             )
 
             break;
@@ -545,8 +783,10 @@ function generate_texture(texture, height) {
 
             console.log("col_size=" + col_size + "  | row_size=" + row_size);
 
-            let num_rows = Math.floor(height / (row_size));
-            let num_cols = Math.floor(bar_width / (col_size))
+            let num_rows = Math.max(Math.floor(height / (row_size)), 1);
+            let num_cols = Math.max(Math.floor(bar_width / (col_size)), 1);
+
+            console.log("num_rows=" + num_rows + "  | num_cols=" + num_cols);
 
             let border_col = 0.5 * (bar_width - (col_size) * num_cols) + col_dist / 2
             let border_row = 0.5 * (height - (row_size) * num_rows) + row_dist / 2
@@ -1096,49 +1336,11 @@ const main = () => {
     // })
 
 
-    //return assembly(diagram_data)
+    return assembly(diagram_data)
     //return terminator(50);
     //return braille_text('test');
     //return legend(4,false,["Test","Test","Hallo","Welt"])
-    return bar([
-        {
-            height: 20,
-            texture: {
-                type: "roughness",
-                value: 1
-            }
-        },
-        {
-            height: 20,
-            texture: {
-                type: "grid_pattern",
-                value: 1
-            }
-        },
-        {
-            height: 20,
-            texture: {
-                type: "lines",
-                value: 1,
-                rotation: 0
-            }
-        },
-        {
-            height: 20,
-            texture: {
-                type: "stair_pattern",
-                value: 1
-            }
-        },
-        {
-            height: 20,
-            texture: {
-                type: "dashed_double_lines",
-                value: 1
-            }
-        }
 
-    ], 10, true);
 
 //   return generate_texture ({
 //     type: "stair_pattern",
