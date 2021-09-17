@@ -75,16 +75,16 @@ let braille = {
 
 let diagram_data = {
     "legend_x": [
-        "Montag",
-        "Dienstag",
+        "Montag2",
+        "Diens1tag2",
         "Mittwoch",
-        "Donnerstag",
+        "Donne1r2sta233g",
         "Freitag",
         "Samstag",
         "Sonntag"
     ],
     "legend_y": [
-        "a"
+        "a3"
     ],
     "external_legend": {
         "title": "Screentime",
@@ -1088,7 +1088,7 @@ function legend(size = 4, type_y = false, data = []) {
     max_text_length = 0;
 
     data.forEach(text => {
-        max_text_length = Math.max(text.length, max_text_length)
+        max_text_length = Math.max(text.length+text.replace(/[^0-9]/g,"").length, max_text_length)
     });
 
     max_text_length = max_text_length * 6 + 7
@@ -1187,7 +1187,7 @@ function external_legend(data) {
             )
         )
         pos += 15
-        max_x = Math.max(max_x, data.title.length * 6 + 20)
+        max_x = Math.max(max_x, (data.title.length + data.title.replace(/[^0-9]/g,"").length)* 6 + 20)
     }
 
     for (let i = 0; i < data.list.length; i++) {
@@ -1209,7 +1209,7 @@ function external_legend(data) {
                 el
             )
         )
-        max_x = Math.max(max_x, 10 + bar_width + list_el.label.length * 6 + 5);
+        max_x = Math.max(max_x, 10 + bar_width + (list_el.label.length + list_el.label.replace(/[^0-9]/g,"").length) * 6 + 5);
         pos += 25
     }
 
